@@ -1192,6 +1192,11 @@ resource "kubernetes_daemon_set_v1" "orchestrator" {
             value = var.core_repository_url
           }
 
+          env {
+            name  = "STORAGE_PROVIDER"
+            value = "AWSBucket"
+          }
+
           env_from {
             secret_ref {
               name = kubernetes_secret_v1.e2b_secrets.metadata[0].name
@@ -1371,6 +1376,21 @@ resource "kubernetes_deployment_v1" "template_manager" {
           env {
             name  = "DOCKERHUB_REMOTE_REPOSITORY_URL"
             value = var.dockerhub_remote_repository_url
+          }
+
+          env {
+            name  = "STORAGE_PROVIDER"
+            value = "AWSBucket"
+          }
+
+          env {
+            name  = "ARTIFACTS_REGISTRY_PROVIDER"
+            value = "AWS_ECR"
+          }
+
+          env {
+            name  = "DOCKERHUB_REMOTE_REPOSITORY_PROVIDER"
+            value = "AWS_ECR"
           }
 
           env_from {
