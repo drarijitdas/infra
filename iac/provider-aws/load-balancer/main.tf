@@ -45,6 +45,7 @@ resource "aws_lb" "nlb" {
   name               = "${var.prefix}nlb"
   internal           = false
   load_balancer_type = "network"
+  security_groups    = [var.nlb_sg_id]
   subnets            = var.public_subnet_ids
 
   enable_deletion_protection = true
@@ -130,14 +131,15 @@ resource "aws_lb_target_group" "session" {
   target_type = "ip"
 
   health_check {
-    protocol            = "TCP"
-    port                = var.client_proxy_port.port
+    protocol            = "HTTP"
+    port                = var.client_proxy_health_port.port
+    path                = var.client_proxy_health_port.path
     healthy_threshold   = 2
     unhealthy_threshold = 2
     interval            = 10
   }
 
-  deregistration_delay = 30
+  deregistration_delay = var.session_deregistration_delay
 
   tags = var.tags
 }

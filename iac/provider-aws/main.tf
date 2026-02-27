@@ -35,6 +35,11 @@ terraform {
       source  = "hashicorp/random"
       version = "3.5.1"
     }
+
+    tls = {
+      source  = "hashicorp/tls"
+      version = "4.1.0"
+    }
   }
 }
 
@@ -91,18 +96,21 @@ locals {
 }
 
 resource "random_password" "api_secret" {
-  length  = 32
-  special = false
+  length           = 32
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}:,.<>?"
 }
 
 resource "random_password" "api_admin_secret" {
-  length  = 32
-  special = false
+  length           = 32
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}:,.<>?"
 }
 
 resource "random_password" "sandbox_access_token_hash_seed" {
-  length  = 32
-  special = false
+  length           = 32
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}:,.<>?"
 }
 
 module "init" {
@@ -116,6 +124,7 @@ module "init" {
 
   template_bucket_name     = var.template_bucket_name
   enable_s3_access_logging = var.enable_s3_access_logging
+  s3_kms_key_arn           = module.security.s3_kms_key_arn
 }
 
 module "security" {
@@ -143,6 +152,12 @@ module "network" {
 
   enable_vpc_flow_logs         = var.enable_vpc_flow_logs
   vpc_flow_logs_retention_days = var.vpc_flow_logs_retention_days
+
+  enable_vpc_endpoints   = var.enable_vpc_endpoints
+  aws_region             = var.aws_region
+  restrict_egress_to_vpc = var.restrict_egress_to_vpc
+  single_nat_gateway     = var.single_nat_gateway
+  allow_sandbox_internet = var.allow_sandbox_internet
 
   tags = var.tags
 }
@@ -192,14 +207,15 @@ module "eks_cluster" {
   kubernetes_version = var.kubernetes_version
 
   vpc_id     = module.network.vpc_id
-  subnet_ids = module.network.public_subnet_ids
+  subnet_ids = module.network.private_subnet_ids
 
-  eks_ami_id            = var.eks_ami_id
-  client_instance_types = var.client_instance_types
-  build_instance_types  = var.build_instance_types
-  client_capacity_types = var.client_capacity_types
-  karpenter_version     = var.karpenter_version
-  public_access_cidrs   = var.eks_public_access_cidrs
+  eks_ami_id              = var.eks_ami_id
+  bootstrap_instance_type = var.bootstrap_instance_type
+  client_instance_types   = var.client_instance_types
+  build_instance_types    = var.build_instance_types
+  client_capacity_types   = var.client_capacity_types
+  karpenter_version       = var.karpenter_version
+  public_access_cidrs     = var.eks_public_access_cidrs
 
   boot_disk_size_gb           = var.boot_disk_size_gb
   cache_disk_size_gb          = var.cache_disk_size_gb
@@ -207,6 +223,21 @@ module "eks_cluster" {
 
   efs_dns_name   = var.efs_cache_enabled ? module.efs[0].efs_dns_name : ""
   efs_mount_path = "/orchestrator/shared-store"
+
+  # EKS cluster logging
+  eks_cluster_log_types  = var.eks_cluster_log_types
+  eks_log_retention_days = var.eks_log_retention_days
+
+  # Karpenter consolidation tuning
+  client_consolidation_after = var.client_consolidation_after
+  build_consolidation_after  = var.build_consolidation_after
+
+  # EBS performance
+  cache_disk_iops            = var.cache_disk_iops
+  cache_disk_throughput_mbps = var.cache_disk_throughput_mbps
+
+  # Temporal affects bootstrap pool sizing
+  temporal_enabled = var.temporal_enabled
 
   tags = var.tags
 }
@@ -219,6 +250,7 @@ module "load_balancer" {
   vpc_id            = module.network.vpc_id
   public_subnet_ids = module.network.public_subnet_ids
   alb_sg_id         = module.network.alb_security_group_id
+  nlb_sg_id         = module.network.nlb_security_group_id
 
   domain_name        = var.domain_name
   additional_domains = local.additional_domains
@@ -227,10 +259,17 @@ module "load_balancer" {
   ingress_port              = var.ingress_port
   docker_reverse_proxy_port = var.docker_reverse_proxy_port
   client_proxy_port         = var.client_proxy_port
+  client_proxy_health_port = {
+    port = var.client_proxy_health_port.port
+    path = var.client_proxy_health_port.path
+  }
 
   eks_node_security_group_id = module.eks_cluster.node_security_group_id
 
   cloudflare_api_token_secret_arn = module.init.cloudflare_api_token_secret_arn
+
+  enable_waf_managed_rules     = var.enable_waf_managed_rules
+  session_deregistration_delay = var.session_deregistration_delay
 
   tags = var.tags
 }
@@ -278,7 +317,8 @@ module "kubernetes" {
   client_proxy_health_port         = var.client_proxy_health_port.port
 
   # Docker reverse proxy
-  docker_reverse_proxy_port = var.docker_reverse_proxy_port
+  docker_reverse_proxy_count = var.docker_reverse_proxy_count
+  docker_reverse_proxy_port  = var.docker_reverse_proxy_port
 
   # Orchestrator
   orchestrator_port           = var.orchestrator_port
@@ -331,4 +371,70 @@ module "kubernetes" {
   filestore_cache_cleanup_max_concurrent_scan   = var.filestore_cache_cleanup_max_concurrent_scan
   filestore_cache_cleanup_max_concurrent_delete = var.filestore_cache_cleanup_max_concurrent_delete
   filestore_cache_cleanup_max_retries           = var.filestore_cache_cleanup_max_retries
+}
+
+module "temporal" {
+  source = "./temporal"
+  count  = var.temporal_enabled ? 1 : 0
+
+  prefix = var.prefix
+  tags   = var.tags
+
+  aurora_host            = var.aurora_host
+  aurora_port            = var.aurora_port
+  temporal_db_user       = var.temporal_db_user
+  temporal_chart_version = var.temporal_chart_version
+
+  temporal_cert_validity_hours  = var.temporal_cert_validity_hours
+  temporal_worker_replica_count = var.temporal_worker_replica_count
+  temporal_web_replica_count    = var.temporal_web_replica_count
+
+  depends_on = [module.eks_cluster]
+}
+
+module "monitoring" {
+  source = "./monitoring"
+  count  = var.enable_monitoring ? 1 : 0
+
+  prefix = var.prefix
+
+  enable_monitoring     = var.enable_monitoring
+  alert_email           = var.alert_email
+  monthly_budget_amount = var.monthly_budget_amount
+
+  eks_cluster_name           = local.cluster_name
+  redis_replication_group_id = var.redis_managed ? module.redis[0].replication_group_id : ""
+  alb_arn_suffix             = module.load_balancer.alb_arn_suffix
+
+  tags = var.tags
+}
+
+# --- Security Checks ---
+
+check "eks_public_access_not_open" {
+  assert {
+    condition     = !contains(var.eks_public_access_cidrs, "0.0.0.0/0")
+    error_message = "WARNING: EKS API is publicly accessible from 0.0.0.0/0. Restrict for production."
+  }
+}
+
+check "cloudtrail_enabled_for_prod" {
+  assert {
+    condition     = var.environment != "prod" || var.enable_cloudtrail
+    error_message = "WARNING: CloudTrail is disabled in production. Enable for audit compliance (ISO 27001 / SOC2)."
+  }
+}
+
+check "guardduty_enabled_for_prod" {
+  assert {
+    condition     = var.environment != "prod" || var.enable_guardduty
+    error_message = "WARNING: GuardDuty is disabled in production. Enable for threat detection (ISO 27001)."
+  }
+}
+
+check "monitoring_requires_alert_email" {
+  assert {
+    condition     = !var.enable_monitoring || var.alert_email != ""
+    error_message = "WARNING: Monitoring is enabled but alert_email is not set. Alerts will not be delivered."
+  }
 }

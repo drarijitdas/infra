@@ -32,6 +32,12 @@ variable "karpenter_version" {
   default     = "1.6.0"
 }
 
+variable "bootstrap_instance_type" {
+  description = "Instance type for bootstrap managed node group (Karpenter controller + system pods). Dev default (2 vCPU, 4 GiB). For production or Temporal, use t3.xlarge."
+  type        = string
+  default     = "t3.medium"
+}
+
 variable "client_instance_types" {
   description = "Instance types for the client (orchestrator) Karpenter NodePool"
   type        = list(string)
@@ -57,7 +63,7 @@ variable "boot_disk_size_gb" {
 }
 
 variable "cache_disk_size_gb" {
-  description = "Cache EBS volume size in GB for Karpenter nodes"
+  description = "Cache EBS volume size in GB for Karpenter nodes. For dev/staging with low sandbox density, 200 GB is sufficient."
   type        = number
   default     = 500
 }
@@ -74,13 +80,15 @@ variable "api_cluster_size" {
 }
 
 variable "api_resources_cpu_count" {
-  type    = number
-  default = 2
+  description = "CPU cores for API pods. Dev default. For production, use 2."
+  type        = number
+  default     = 0.5
 }
 
 variable "api_resources_memory_mb" {
-  type    = number
-  default = 2048
+  description = "Memory in MB for API pods. Dev default. For production, use 2048."
+  type        = number
+  default     = 512
 }
 
 variable "clickhouse_cluster_size" {
@@ -119,22 +127,24 @@ variable "clickhouse_health_port" {
 
 variable "client_proxy_count" {
   type    = number
-  default = 1
+  default = 2
 }
 
 variable "ingress_count" {
   type    = number
-  default = 1
+  default = 2
 }
 
 variable "client_proxy_resources_memory_mb" {
-  type    = number
-  default = 1024
+  description = "Memory in MB for client proxy pods. Dev default. For production, use 1024."
+  type        = number
+  default     = 256
 }
 
 variable "client_proxy_resources_cpu_count" {
-  type    = number
-  default = 1
+  description = "CPU cores for client proxy pods. Dev default. For production, use 1."
+  type        = number
+  default     = 0.25
 }
 
 variable "client_proxy_update_max_parallel" {
@@ -169,7 +179,7 @@ variable "client_proxy_port" {
 
 variable "loki_cluster_size" {
   type    = number
-  default = 0
+  default = 1
 }
 
 variable "api_port" {
@@ -196,6 +206,12 @@ variable "ingress_port" {
     port        = 8800
     health_path = "/ping"
   }
+}
+
+variable "docker_reverse_proxy_count" {
+  description = "Number of docker-reverse-proxy replicas"
+  type        = number
+  default     = 2
 }
 
 variable "docker_reverse_proxy_port" {
@@ -253,23 +269,27 @@ variable "environment" {
 }
 
 variable "otel_collector_resources_memory_mb" {
-  type    = number
-  default = 1024
+  description = "Memory in MB for OTEL collector pods. Dev default. For production telemetry, use 1024."
+  type        = number
+  default     = 256
 }
 
 variable "otel_collector_resources_cpu_count" {
-  type    = number
-  default = 0.5
+  description = "CPU cores for OTEL collector pods. Dev default. For production telemetry, use 0.5."
+  type        = number
+  default     = 0.1
 }
 
 variable "clickhouse_resources_memory_mb" {
-  type    = number
-  default = 8192
+  description = "Memory in MB for ClickHouse pods. Dev default. For production analytics, use 8192."
+  type        = number
+  default     = 1024
 }
 
 variable "clickhouse_resources_cpu_count" {
-  type    = number
-  default = 4
+  description = "CPU cores for ClickHouse pods. Dev default. For production analytics, use 4."
+  type        = number
+  default     = 0.5
 }
 
 variable "domain_name" {
@@ -297,13 +317,15 @@ variable "tags" {
 }
 
 variable "loki_resources_memory_mb" {
-  type    = number
-  default = 2048
+  description = "Memory in MB for Loki pods. Dev default. For production log volume, use 2048."
+  type        = number
+  default     = 512
 }
 
 variable "loki_resources_cpu_count" {
-  type    = number
-  default = 1
+  description = "CPU cores for Loki pods. Dev default. For production log volume, use 1."
+  type        = number
+  default     = 0.25
 }
 
 variable "loki_service_port" {
@@ -366,9 +388,9 @@ variable "vpc_flow_logs_retention_days" {
 }
 
 variable "enable_guardduty" {
-  description = "Enable AWS GuardDuty for threat detection (ISO 27001)"
+  description = "Enable AWS GuardDuty for threat detection (ISO 27001). Enabled by default for production security."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "enable_aws_config" {
@@ -384,9 +406,9 @@ variable "enable_inspector" {
 }
 
 variable "enable_cloudtrail" {
-  description = "Enable AWS CloudTrail for API audit logging (ISO 27001 / SOC2)"
+  description = "Enable AWS CloudTrail for API audit logging (ISO 27001 / SOC2). Enabled by default for production security."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "enable_s3_access_logging" {
@@ -396,9 +418,107 @@ variable "enable_s3_access_logging" {
 }
 
 variable "eks_public_access_cidrs" {
-  description = "CIDR blocks allowed to access the EKS API endpoint publicly. Set to a restricted list for production."
+  description = "CIDR blocks allowed to access the EKS API endpoint publicly. Empty default forces explicit configuration. Restrict to your team's IP ranges."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
+}
+
+# --- EKS Cluster Logging ---
+
+variable "eks_cluster_log_types" {
+  description = "EKS control plane log types to enable (default: audit + authenticator for non-production; production should override to include all 5 types)"
+  type        = list(string)
+  default     = ["audit", "authenticator"]
+}
+
+variable "eks_log_retention_days" {
+  description = "CloudWatch log group retention in days for EKS cluster logs"
+  type        = number
+  default     = 90
+}
+
+# --- Karpenter Tuning ---
+
+variable "client_consolidation_after" {
+  description = "Karpenter consolidation delay for client NodePool (prevents thrashing for bursty sandboxes)"
+  type        = string
+  default     = "300s"
+}
+
+variable "build_consolidation_after" {
+  description = "Karpenter consolidation delay for build NodePool (batch-style, fast consolidation)"
+  type        = string
+  default     = "60s"
+}
+
+# --- EBS Performance ---
+
+variable "cache_disk_iops" {
+  description = "Provisioned IOPS for cache EBS volume (gp3 baseline: 3000, recommended: 6000 for high sandbox density). For dev/staging, 3000 is sufficient and saves cost."
+  type        = number
+  default     = 6000
+}
+
+variable "cache_disk_throughput_mbps" {
+  description = "Provisioned throughput in MB/s for cache EBS volume (gp3 baseline: 125, recommended: 400)"
+  type        = number
+  default     = 400
+}
+
+# --- VPC Endpoints ---
+
+variable "enable_vpc_endpoints" {
+  description = "Enable VPC endpoints for AWS services (S3, ECR, Secrets Manager, CloudWatch, STS) to reduce NAT costs. Enabled by default for cost savings."
+  type        = bool
+  default     = true
+}
+
+variable "single_nat_gateway" {
+  description = "Use a single NAT gateway instead of one per AZ (cost savings for dev/staging, reduced HA). Recommended true for dev, false for staging/prod."
+  type        = bool
+  default     = false
+}
+
+# --- WAF & Load Balancer ---
+
+variable "enable_waf_managed_rules" {
+  description = "Enable AWS managed WAF rule groups (CommonRuleSet, KnownBadInputs, SQLi, IpReputation)"
+  type        = bool
+  default     = true
+}
+
+variable "session_deregistration_delay" {
+  description = "Deregistration delay in seconds for NLB session target group (higher for long-lived WebSockets)"
+  type        = number
+  default     = 300
+}
+
+# --- Monitoring & Alerting ---
+
+variable "enable_monitoring" {
+  description = "Enable CloudWatch alarms and SNS alerting for cost, reliability, and performance monitoring. Requires alert_email to be set."
+  type        = bool
+  default     = true
+}
+
+variable "alert_email" {
+  description = "Email address for CloudWatch alarm notifications"
+  type        = string
+  default     = ""
+}
+
+variable "monthly_budget_amount" {
+  description = "Monthly AWS spending threshold in USD for billing alarm"
+  type        = number
+  default     = 1000
+}
+
+# --- Security Hardening ---
+
+variable "restrict_egress_to_vpc" {
+  description = "Restrict egress on RDS, ElastiCache, EFS, and ALB security groups to VPC CIDR only (enabled by default)"
+  type        = bool
+  default     = true
 }
 
 variable "filestore_cache_cleanup_disk_usage_target" {
@@ -460,4 +580,54 @@ variable "loki_use_v13_schema_from" {
 variable "dockerhub_remote_repository_url" {
   type    = string
   default = ""
+}
+
+# --- Temporal Configuration ---
+
+variable "temporal_enabled" {
+  description = "Enable Temporal Server deployment for multi-agent orchestration"
+  type        = bool
+  default     = false
+}
+
+variable "aurora_host" {
+  description = "Aurora PostgreSQL cluster endpoint for Temporal persistence"
+  type        = string
+  default     = ""
+}
+
+variable "aurora_port" {
+  description = "Aurora PostgreSQL port"
+  type        = number
+  default     = 5432
+}
+
+variable "temporal_db_user" {
+  description = "PostgreSQL user for Temporal databases (temporal, temporal_visibility)"
+  type        = string
+  default     = "temporal"
+}
+
+variable "temporal_chart_version" {
+  description = "Temporal Helm chart version. Pin to a specific version for reproducible deploys. Last reviewed: 2026-02-26."
+  type        = string
+  default     = "0.73.1"
+}
+
+variable "temporal_cert_validity_hours" {
+  description = "Validity period in hours for Temporal mTLS certificates (default: 1 year)"
+  type        = number
+  default     = 8760
+}
+
+variable "temporal_worker_replica_count" {
+  description = "Number of Temporal worker replicas"
+  type        = number
+  default     = 2
+}
+
+variable "temporal_web_replica_count" {
+  description = "Number of Temporal web UI replicas"
+  type        = number
+  default     = 2
 }

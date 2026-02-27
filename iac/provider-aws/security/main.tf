@@ -34,6 +34,19 @@ resource "aws_guardduty_detector_feature" "ebs_malware_protection" {
   status      = "ENABLED"
 }
 
+resource "aws_guardduty_detector_feature" "runtime_monitoring" {
+  count = var.enable_guardduty ? 1 : 0
+
+  detector_id = aws_guardduty_detector.main[0].id
+  name        = "RUNTIME_MONITORING"
+  status      = "ENABLED"
+
+  additional_configuration {
+    name   = "EKS_ADDON_MANAGEMENT"
+    status = "ENABLED"
+  }
+}
+
 # --- AWS Config ---
 # Continuous configuration compliance monitoring and drift detection (ISO 27001)
 
@@ -65,6 +78,16 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "config" {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "config" {
+  count = var.enable_aws_config ? 1 : 0
+
+  bucket = aws_s3_bucket.config[0].id
+
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
@@ -240,8 +263,19 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.s3.arn
     }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail" {
+  count = var.enable_cloudtrail ? 1 : 0
+
+  bucket = aws_s3_bucket.cloudtrail[0].id
+
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
@@ -308,6 +342,8 @@ resource "aws_cloudtrail" "main" {
   include_global_service_events = true
   is_multi_region_trail         = true
   enable_logging                = true
+  enable_log_file_validation    = true
+  kms_key_id                    = aws_kms_key.s3.arn
 
   tags = var.tags
 
@@ -322,4 +358,63 @@ resource "aws_inspector2_enabler" "main" {
 
   account_ids    = [data.aws_caller_identity.current.account_id]
   resource_types = ["EC2", "ECR"]
+}
+
+# --- KMS Customer Managed Key for S3 Encryption ---
+resource "aws_kms_key" "s3" {
+  description             = "CMK for S3 bucket encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccountAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowS3Service"
+        Effect = "Allow"
+        Principal = {
+          Service = "s3.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudTrailEncryption"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceArn" = "arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/${var.prefix}cloudtrail"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_kms_alias" "s3" {
+  name          = "alias/${var.prefix}s3-encryption"
+  target_key_id = aws_kms_key.s3.key_id
 }

@@ -33,8 +33,11 @@ resource "kubernetes_storage_class_v1" "gp3" {
 # --- Namespace ---
 resource "kubernetes_namespace_v1" "e2b" {
   metadata {
-    name   = "e2b"
-    labels = local.common_labels
+    name = "e2b"
+    labels = merge(local.common_labels, {
+      "pod-security.kubernetes.io/enforce" = "baseline"
+      "pod-security.kubernetes.io/warn"    = "restricted"
+    })
   }
 }
 
@@ -215,6 +218,32 @@ resource "aws_secretsmanager_secret_version" "clickhouse_server_secret_value" {
 }
 
 # --- K8s Secrets ---
+resource "kubernetes_secret_v1" "clickhouse_credentials" {
+  metadata {
+    name      = "clickhouse-credentials"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = local.common_labels
+  }
+
+  data = {
+    CLICKHOUSE_PASSWORD = random_password.clickhouse_password.result
+  }
+}
+
+resource "kubernetes_secret_v1" "otel_credentials" {
+  metadata {
+    name      = "otel-credentials"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = local.common_labels
+  }
+
+  data = {
+    GRAFANA_OTEL_COLLECTOR_TOKEN = data.aws_secretsmanager_secret_version.grafana_otel_collector_token.secret_string
+    GRAFANA_OTLP_URL             = data.aws_secretsmanager_secret_version.grafana_otlp_url.secret_string
+    GRAFANA_USERNAME             = data.aws_secretsmanager_secret_version.grafana_username.secret_string
+  }
+}
+
 resource "kubernetes_secret_v1" "e2b_secrets" {
   metadata {
     name      = "e2b-secrets"
@@ -420,6 +449,39 @@ resource "kubernetes_service_v1" "api" {
   }
 }
 
+# --- API Horizontal Pod Autoscaler ---
+resource "kubernetes_horizontal_pod_autoscaler_v2" "api" {
+  metadata {
+    name      = "api"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "api" })
+  }
+
+  spec {
+    scale_target_ref {
+      api_version = "apps/v1"
+      kind        = "Deployment"
+      name        = kubernetes_deployment_v1.api.metadata[0].name
+    }
+
+    min_replicas = var.api_machine_count
+    max_replicas = var.api_machine_count * 3
+
+    metric {
+      type = "Resource"
+
+      resource {
+        name = "cpu"
+
+        target {
+          type                = "Utilization"
+          average_utilization = 70
+        }
+      }
+    }
+  }
+}
+
 # --- Client Proxy Deployment ---
 resource "kubernetes_deployment_v1" "client_proxy" {
   metadata {
@@ -450,6 +512,20 @@ resource "kubernetes_deployment_v1" "client_proxy" {
       spec {
         node_selector = {
           "e2b.dev/node-pool" = "system"
+        }
+
+        affinity {
+          pod_anti_affinity {
+            preferred_during_scheduling_ignored_during_execution {
+              weight = 100
+              pod_affinity_term {
+                label_selector {
+                  match_labels = { "app.kubernetes.io/name" = "client-proxy" }
+                }
+                topology_key = "kubernetes.io/hostname"
+              }
+            }
+          }
         }
 
         container {
@@ -521,6 +597,15 @@ resource "kubernetes_deployment_v1" "client_proxy" {
             initial_delay_seconds = 10
             period_seconds        = 10
           }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = var.client_proxy_health_port
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
         }
       }
     }
@@ -547,6 +632,39 @@ resource "kubernetes_service_v1" "client_proxy" {
   }
 }
 
+# --- Client Proxy Horizontal Pod Autoscaler ---
+resource "kubernetes_horizontal_pod_autoscaler_v2" "client_proxy" {
+  metadata {
+    name      = "client-proxy"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "client-proxy" })
+  }
+
+  spec {
+    scale_target_ref {
+      api_version = "apps/v1"
+      kind        = "Deployment"
+      name        = kubernetes_deployment_v1.client_proxy.metadata[0].name
+    }
+
+    min_replicas = var.client_proxy_count
+    max_replicas = var.client_proxy_count * 3
+
+    metric {
+      type = "Resource"
+
+      resource {
+        name = "cpu"
+
+        target {
+          type                = "Utilization"
+          average_utilization = 70
+        }
+      }
+    }
+  }
+}
+
 # --- Docker Reverse Proxy Deployment ---
 resource "kubernetes_deployment_v1" "docker_reverse_proxy" {
   metadata {
@@ -556,7 +674,7 @@ resource "kubernetes_deployment_v1" "docker_reverse_proxy" {
   }
 
   spec {
-    replicas = 1
+    replicas = var.docker_reverse_proxy_count
 
     selector {
       match_labels = { "app.kubernetes.io/name" = "docker-reverse-proxy" }
@@ -716,6 +834,220 @@ resource "kubernetes_service_v1" "ingress" {
       port        = var.ingress_port.port
       target_port = var.ingress_port.port
     }
+  }
+}
+
+# --- PodDisruptionBudgets ---
+resource "kubernetes_pod_disruption_budget_v1" "api" {
+  metadata {
+    name      = "api"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "api" })
+  }
+
+  spec {
+    max_unavailable = "1"
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "api" }
+    }
+  }
+}
+
+resource "kubernetes_pod_disruption_budget_v1" "client_proxy" {
+  metadata {
+    name      = "client-proxy"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "client-proxy" })
+  }
+
+  spec {
+    max_unavailable = "1"
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "client-proxy" }
+    }
+  }
+}
+
+resource "kubernetes_pod_disruption_budget_v1" "ingress" {
+  metadata {
+    name      = "ingress"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "ingress" })
+  }
+
+  spec {
+    max_unavailable = "1"
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "ingress" }
+    }
+  }
+}
+
+resource "kubernetes_pod_disruption_budget_v1" "clickhouse" {
+  count = var.clickhouse_server_count > 0 ? 1 : 0
+
+  metadata {
+    name      = "clickhouse"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "clickhouse" })
+  }
+
+  spec {
+    max_unavailable = "1"
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "clickhouse" }
+    }
+  }
+}
+
+# --- NetworkPolicy for e2b namespace ---
+resource "kubernetes_network_policy_v1" "e2b" {
+  metadata {
+    name      = "e2b-default"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = local.common_labels
+  }
+
+  spec {
+    pod_selector {}
+
+    # Allow all traffic within e2b namespace
+    ingress {
+      from {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "e2b"
+          }
+        }
+      }
+    }
+
+    # Allow ingress from ALB (kube-system for AWS LB controller, or node traffic)
+    ingress {
+      from {
+        ip_block {
+          cidr = "10.0.0.0/16"
+        }
+      }
+
+      ports {
+        port     = "50001"
+        protocol = "TCP"
+      }
+      ports {
+        port     = "8800"
+        protocol = "TCP"
+      }
+      ports {
+        port     = "5000"
+        protocol = "TCP"
+      }
+      ports {
+        port     = "3002"
+        protocol = "TCP"
+      }
+      ports {
+        port     = "3001"
+        protocol = "TCP"
+      }
+    }
+
+    # Allow Temporal namespace to reach API gRPC
+    ingress {
+      from {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "temporal"
+          }
+        }
+      }
+
+      ports {
+        port     = "5009"
+        protocol = "TCP"
+      }
+    }
+
+    # Allow DNS from kube-system
+    egress {
+      to {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "kube-system"
+          }
+        }
+      }
+
+      ports {
+        port     = "53"
+        protocol = "TCP"
+      }
+      ports {
+        port     = "53"
+        protocol = "UDP"
+      }
+    }
+
+    # Allow all egress within e2b namespace
+    egress {
+      to {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "e2b"
+          }
+        }
+      }
+    }
+
+    # Allow egress to Temporal namespace
+    egress {
+      to {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "temporal"
+          }
+        }
+      }
+
+      ports {
+        port     = "7233"
+        protocol = "TCP"
+      }
+    }
+
+    # Allow egress to VPC CIDR (for AWS services, RDS, ElastiCache, etc.)
+    egress {
+      to {
+        ip_block {
+          cidr = "10.0.0.0/16"
+        }
+      }
+    }
+
+    # Allow HTTPS egress to internet (external APIs, S3, etc.) excluding private ranges
+    egress {
+      to {
+        ip_block {
+          cidr = "0.0.0.0/0"
+          except = [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+          ]
+        }
+      }
+
+      ports {
+        port     = "443"
+        protocol = "TCP"
+      }
+    }
+
+    policy_types = ["Ingress", "Egress"]
   }
 }
 
@@ -1209,8 +1541,13 @@ resource "kubernetes_stateful_set_v1" "clickhouse" {
           }
 
           env {
-            name  = "CLICKHOUSE_PASSWORD"
-            value = random_password.clickhouse_password.result
+            name = "CLICKHOUSE_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.clickhouse_credentials.metadata[0].name
+                key  = "CLICKHOUSE_PASSWORD"
+              }
+            }
           }
 
           env {
@@ -1241,6 +1578,15 @@ resource "kubernetes_stateful_set_v1" "clickhouse" {
             }
             initial_delay_seconds = 30
             period_seconds        = 10
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/ping"
+              port = 8123
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
           }
         }
       }
@@ -1288,6 +1634,79 @@ resource "kubernetes_service_v1" "clickhouse" {
       name        = "http"
       port        = 8123
       target_port = 8123
+    }
+  }
+}
+
+# --- ClickHouse Backup CronJob ---
+resource "kubernetes_cron_job_v1" "clickhouse_backup" {
+  count = var.clickhouse_server_count > 0 ? 1 : 0
+
+  metadata {
+    name      = "clickhouse-backup"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "clickhouse-backup" })
+  }
+
+  spec {
+    schedule                      = "0 2 * * *"
+    successful_jobs_history_limit = 3
+    failed_jobs_history_limit     = 3
+    concurrency_policy            = "Forbid"
+
+    job_template {
+      metadata {
+        labels = merge(local.common_labels, { "app.kubernetes.io/name" = "clickhouse-backup" })
+      }
+
+      spec {
+        backoff_limit = 2
+
+        template {
+          metadata {
+            labels = merge(local.common_labels, { "app.kubernetes.io/name" = "clickhouse-backup" })
+          }
+
+          spec {
+            node_selector = {
+              "e2b.dev/node-pool" = "system"
+            }
+
+            restart_policy = "OnFailure"
+
+            container {
+              name  = "backup"
+              image = "clickhouse/clickhouse-server:24.1"
+
+              command = ["/bin/sh", "-c"]
+              args = [
+                <<-EOT
+                clickhouse-client --host clickhouse.e2b.svc.cluster.local \
+                  --port ${var.clickhouse_server_port.port} \
+                  --user ${var.clickhouse_username} \
+                  --password "$CLICKHOUSE_PASSWORD" \
+                  --query "BACKUP DATABASE ${var.clickhouse_database} TO S3('https://${var.clickhouse_backups_bucket_name}.s3.amazonaws.com/daily/$(date +%%Y-%%m-%%d)', '$AWS_ACCESS_KEY_ID', '$AWS_SECRET_ACCESS_KEY')"
+                EOT
+              ]
+
+              env {
+                name = "CLICKHOUSE_PASSWORD"
+                value_from {
+                  secret_key_ref {
+                    name = kubernetes_secret_v1.clickhouse_credentials.metadata[0].name
+                    key  = "CLICKHOUSE_PASSWORD"
+                  }
+                }
+              }
+
+              env {
+                name  = "AWS_REGION"
+                value = var.aws_region
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -1355,6 +1774,15 @@ resource "kubernetes_deployment_v1" "loki" {
             initial_delay_seconds = 30
             period_seconds        = 10
           }
+
+          readiness_probe {
+            http_get {
+              path = "/ready"
+              port = var.loki_service_port.port
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
         }
       }
     }
@@ -1415,18 +1843,33 @@ resource "kubernetes_daemon_set_v1" "otel_collector" {
           }
 
           env {
-            name  = "GRAFANA_OTEL_COLLECTOR_TOKEN"
-            value = data.aws_secretsmanager_secret_version.grafana_otel_collector_token.secret_string
+            name = "GRAFANA_OTEL_COLLECTOR_TOKEN"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.otel_credentials.metadata[0].name
+                key  = "GRAFANA_OTEL_COLLECTOR_TOKEN"
+              }
+            }
           }
 
           env {
-            name  = "GRAFANA_OTLP_URL"
-            value = data.aws_secretsmanager_secret_version.grafana_otlp_url.secret_string
+            name = "GRAFANA_OTLP_URL"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.otel_credentials.metadata[0].name
+                key  = "GRAFANA_OTLP_URL"
+              }
+            }
           }
 
           env {
-            name  = "GRAFANA_USERNAME"
-            value = data.aws_secretsmanager_secret_version.grafana_username.secret_string
+            name = "GRAFANA_USERNAME"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.otel_credentials.metadata[0].name
+                key  = "GRAFANA_USERNAME"
+              }
+            }
           }
 
           env {
@@ -1435,8 +1878,13 @@ resource "kubernetes_daemon_set_v1" "otel_collector" {
           }
 
           env {
-            name  = "CLICKHOUSE_PASSWORD"
-            value = random_password.clickhouse_password.result
+            name = "CLICKHOUSE_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.clickhouse_credentials.metadata[0].name
+                key  = "CLICKHOUSE_PASSWORD"
+              }
+            }
           }
 
           env {

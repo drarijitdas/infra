@@ -18,9 +18,13 @@ module "eks" {
   subnet_ids = var.subnet_ids
 
   # API endpoint access
-  endpoint_public_access  = true
-  endpoint_private_access = true
-  public_access_cidrs     = var.public_access_cidrs
+  endpoint_public_access       = true
+  endpoint_private_access      = true
+  endpoint_public_access_cidrs = var.public_access_cidrs
+
+  # Cluster logging
+  enabled_log_types                      = var.eks_cluster_log_types
+  cloudwatch_log_group_retention_in_days = var.eks_log_retention_days
 
   # Core EKS addons
   addons = {
@@ -35,11 +39,11 @@ module "eks" {
   eks_managed_node_groups = {
     bootstrap = {
       ami_type       = "AL2023_x86_64_STANDARD"
-      instance_types = ["t3.medium"]
+      instance_types = [var.bootstrap_instance_type]
 
-      min_size     = 2
-      max_size     = 3
-      desired_size = 2
+      min_size     = var.temporal_enabled ? 4 : 2
+      max_size     = 10
+      desired_size = var.temporal_enabled ? 4 : 2
 
       labels = {
         "e2b.dev/node-pool" = "system"
@@ -60,12 +64,62 @@ module "eks" {
     "karpenter.sh/discovery" = var.cluster_name
   }
 
+  # Encrypt K8s secrets at rest with KMS
+  encryption_config = {
+    provider_key_arn = aws_kms_key.eks_secrets.arn
+    resources        = ["secrets"]
+  }
+
   # Enable IRSA
   enable_irsa = true
 
   tags = merge(var.tags, {
     "karpenter.sh/discovery" = var.cluster_name
   })
+}
+
+# --- KMS Key for EKS Secrets Envelope Encryption ---
+resource "aws_kms_key" "eks_secrets" {
+  description             = "KMS key for EKS secrets envelope encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccountAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${local.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowEKSCluster"
+        Effect = "Allow"
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:Encrypt",
+          "kms:GenerateDataKey*",
+          "kms:ReEncrypt*",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_kms_alias" "eks_secrets" {
+  name          = "alias/${var.cluster_name}-eks-secrets"
+  target_key_id = aws_kms_key.eks_secrets.key_id
 }
 
 # --- Karpenter IAM & Infrastructure ---
@@ -113,12 +167,12 @@ resource "helm_release" "karpenter" {
       controller = {
         resources = {
           requests = {
-            cpu    = "1"
-            memory = "1Gi"
+            cpu    = "250m"
+            memory = "512Mi"
           }
           limits = {
-            cpu    = "1"
-            memory = "1Gi"
+            cpu    = "250m"
+            memory = "512Mi"
           }
         }
       }
