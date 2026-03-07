@@ -81,7 +81,7 @@ type Config struct {
 }
 
 type VolumeMountConfig struct {
-	ID   string
+	ID   uuid.UUID
 	Name string
 	Path string
 	Type string
@@ -95,6 +95,23 @@ type EnvdMetadata struct {
 	Version        string
 }
 
+// SandboxType distinguishes build sandboxes from regular sandboxes.
+type SandboxType string
+
+const (
+	SandboxTypeSandbox SandboxType = "sandbox"
+	SandboxTypeBuild   SandboxType = "build"
+)
+
+// String returns the sandbox type as a string, defaulting to "sandbox" if empty.
+func (t SandboxType) String() string {
+	if t == "" {
+		return string(SandboxTypeSandbox)
+	}
+
+	return string(t)
+}
+
 type RuntimeMetadata struct {
 	TemplateID  string
 	SandboxID   string
@@ -102,6 +119,10 @@ type RuntimeMetadata struct {
 
 	// TeamID optional, used only for logging
 	TeamID string
+
+	// BuildID is the ID of the associated template build.
+	BuildID     string
+	SandboxType SandboxType
 }
 
 type Resources struct {
@@ -311,6 +332,9 @@ func (f *Factory) CreateSandbox(
 		return nil, err
 	}
 
+	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, sandboxFiles.SandboxCgroupName(), cleanup)
+	defer releaseCgroupFD(ctx, cgroupHandle, runtime.SandboxID)
+
 	fcHandle, err := fc.NewProcess(
 		ctx,
 		execCtx,
@@ -325,6 +349,8 @@ func (f *Factory) CreateSandbox(
 		return nil, fmt.Errorf("failed to init FC: %w", err)
 	}
 
+	throttleConfig := featureflags.GetTCPFirewallEgressThrottleConfig(ctx, f.featureFlags)
+
 	telemetry.ReportEvent(ctx, "created fc client")
 
 	err = fcHandle.Create(
@@ -338,6 +364,11 @@ func (f *Factory) CreateSandbox(
 		config.RamMB,
 		config.HugePages,
 		processOptions,
+		fc.TxRateLimiterConfig{
+			Ops:       fc.TokenBucketConfig(throttleConfig.Ops),
+			Bandwidth: fc.TokenBucketConfig(throttleConfig.Bandwidth),
+		},
+		cgroupFD,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create FC: %w", err)
@@ -365,8 +396,9 @@ func (f *Factory) CreateSandbox(
 	sbx := &Sandbox{
 		LifecycleID: uuid.NewString(),
 
-		Resources: resources,
-		Metadata:  metadata,
+		Resources:    resources,
+		Metadata:     metadata,
+		cgroupHandle: cgroupHandle,
 
 		Template: template,
 		config:   f.config,
@@ -380,10 +412,16 @@ func (f *Factory) CreateSandbox(
 		exit: exit,
 	}
 
-	sbx.Checks = NewChecks(sbx, false)
+	useClickhouseMetrics := f.featureFlags.BoolFlag(ctx, featureflags.MetricsWriteFlag)
+	sbx.Checks = NewChecks(sbx, useClickhouseMetrics)
 
 	// Stop the sandbox first if it is still running, otherwise do nothing
 	cleanup.AddPriority(ctx, sbx.Stop)
+
+	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
+		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond
+		initializeHostStatsCollector(execCtx, sbx, fcHandle, runtime, config, f.hostStatsDelivery, samplingInterval)
+	}
 
 	go func() {
 		defer execSpan.End()
@@ -587,7 +625,8 @@ func (f *Factory) ResumeSandbox(
 	}
 
 	// Create cgroup for sandbox resource accounting
-	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, runtime.SandboxID, cleanup)
+	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, sandboxFiles.SandboxCgroupName(), cleanup)
+	defer releaseCgroupFD(ctx, cgroupHandle, runtime.SandboxID)
 
 	fcHandle, fcErr := fc.NewProcess(
 		ctx,
@@ -607,6 +646,8 @@ func (f *Factory) ResumeSandbox(
 	if fcErr != nil {
 		return nil, fmt.Errorf("failed to create FC: %w", fcErr)
 	}
+
+	resumeThrottleConfig := featureflags.GetTCPFirewallEgressThrottleConfig(ctx, f.featureFlags)
 
 	telemetry.ReportEvent(ctx, "created FC process")
 
@@ -642,16 +683,11 @@ func (f *Factory) ResumeSandbox(
 		fcUffd.Ready(),
 		config.Envd.AccessToken,
 		cgroupFD,
+		fc.TxRateLimiterConfig{
+			Ops:       fc.TokenBucketConfig(resumeThrottleConfig.Ops),
+			Bandwidth: fc.TokenBucketConfig(resumeThrottleConfig.Bandwidth),
+		},
 	)
-
-	// Release the cgroup directory FD — the kernel already used it during clone
-	if cgroupHandle != nil {
-		if releaseErr := cgroupHandle.ReleaseCgroupFD(); releaseErr != nil {
-			logger.L().Warn(ctx, "failed to release cgroup directory FD",
-				logger.WithSandboxID(runtime.SandboxID),
-				zap.Error(releaseErr))
-		}
-	}
 
 	if fcStartErr != nil {
 		return nil, fmt.Errorf("failed to start FC: %w", fcStartErr)
@@ -721,7 +757,7 @@ func (f *Factory) ResumeSandbox(
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
 		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond
-		initializeHostStatsCollector(execCtx, sbx, fcHandle, meta.Template.BuildID, runtime, config, f.hostStatsDelivery, samplingInterval)
+		initializeHostStatsCollector(execCtx, sbx, fcHandle, runtime, config, f.hostStatsDelivery, samplingInterval)
 	}
 
 	go sbx.Checks.Start(execCtx)
@@ -1075,9 +1111,9 @@ func pauseProcessRootfs(
 //
 // Returns the CgroupHandle and the cgroup directory FD to pass to the
 // Firecracker process. If cgroup accounting is disabled, returns (nil, cgroup.NoCgroupFD).
-func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, sandboxID string, cleanup *Cleanup) (*cgroup.CgroupHandle, int) {
+func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, cgroupName string, cleanup *Cleanup) (*cgroup.CgroupHandle, int) {
 	ctx, span := tracer.Start(ctx, "sandbox-create-cgroup", trace.WithAttributes(
-		telemetry.WithSandboxID(sandboxID),
+		attribute.String("cgroup_name", cgroupName),
 	))
 	defer span.End()
 
@@ -1085,10 +1121,10 @@ func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, sandboxID s
 		return nil, cgroup.NoCgroupFD
 	}
 
-	handle, err := cgroupManager.Create(ctx, sandboxID)
+	handle, err := cgroupManager.Create(ctx, cgroupName)
 	if err != nil {
 		logger.L().Warn(ctx, "failed to create cgroup, continuing without cgroup accounting",
-			logger.WithSandboxID(sandboxID),
+			zap.String("cgroup_name", cgroupName),
 			zap.Error(err))
 
 		telemetry.ReportEvent(ctx, "cgroup creation failed, continuing without accounting")
@@ -1233,6 +1269,16 @@ func (s *Sandbox) WaitForEnvd(
 	telemetry.ReportEvent(ctx, fmt.Sprintf("[sandbox %s]: initialized new envd", s.Metadata.Runtime.SandboxID))
 
 	return nil
+}
+
+func releaseCgroupFD(ctx context.Context, cgroupHandle *cgroup.CgroupHandle, sandboxID string) {
+	if cgroupHandle != nil {
+		if releaseErr := cgroupHandle.ReleaseCgroupFD(); releaseErr != nil {
+			logger.L().Warn(ctx, "failed to release cgroup directory FD",
+				logger.WithSandboxID(sandboxID),
+				zap.Error(releaseErr))
+		}
+	}
 }
 
 func (f *Factory) GetEnvdInitRequestTimeout(ctx context.Context) time.Duration {

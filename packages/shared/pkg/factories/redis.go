@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 
 	"github.com/redis/go-redis/extra/redisotel/v9"
@@ -23,11 +22,14 @@ type RedisConfig struct {
 	RedisURL         string
 	RedisClusterURL  string
 	RedisTLSCABase64 string
+	// PoolSize overrides the default connection pool size.
+	// When non-positive, defaults to 40.
+	PoolSize int
 }
 
 const (
-	clusterNodeConnectionSizePerCPU = 20
-	minIdleConnectionsPerCPU        = 5
+	defaultPoolSize     = 40
+	defaultMinIdleConns = 10
 )
 
 func NewRedisClient(ctx context.Context, config RedisConfig) (redis.UniversalClient, error) {
@@ -40,11 +42,17 @@ func NewRedisClient(ctx context.Context, config RedisConfig) (redis.UniversalCli
 		// https://cloud.google.com/memorystore/docs/cluster/cluster-node-specification#cluster_endpoints
 		// https://cloud.google.com/memorystore/docs/cluster/client-library-code-samples#go-redis
 
-		numCPU := runtime.GOMAXPROCS(0)
+		poolSize := defaultPoolSize
+		minIdleConns := defaultMinIdleConns
+		if config.PoolSize > 0 {
+			poolSize = max(defaultMinIdleConns, config.PoolSize)
+			minIdleConns = max(defaultMinIdleConns, config.PoolSize/4)
+		}
+
 		clusterOpts := &redis.ClusterOptions{
 			Addrs:        []string{config.RedisClusterURL},
-			PoolSize:     clusterNodeConnectionSizePerCPU * numCPU,
-			MinIdleConns: minIdleConnectionsPerCPU * numCPU,
+			PoolSize:     poolSize,
+			MinIdleConns: minIdleConns,
 		}
 
 		if config.RedisTLSCABase64 != "" {
@@ -75,10 +83,19 @@ func NewRedisClient(ctx context.Context, config RedisConfig) (redis.UniversalCli
 
 		redisClient = redis.NewClusterClient(clusterOpts)
 	case config.RedisURL != "":
-		redisClient = redis.NewClient(&redis.Options{
+		poolSize := defaultPoolSize
+		minIdleConns := defaultMinIdleConns
+		if config.PoolSize > 0 {
+			poolSize = max(defaultMinIdleConns, config.PoolSize)
+			minIdleConns = max(defaultMinIdleConns, config.PoolSize/4)
+		}
+		opts := &redis.Options{
 			Addr:         config.RedisURL,
-			MinIdleConns: 1,
-		})
+			PoolSize:     poolSize,
+			MinIdleConns: minIdleConns,
+		}
+
+		redisClient = redis.NewClient(opts)
 	default:
 		return nil, ErrRedisDisabled
 	}
