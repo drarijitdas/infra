@@ -181,6 +181,32 @@ variable "build_cache_bucket_name" {
   type = string
 }
 
+# Template manager autoscaling
+variable "template_manager_hpa_enabled" {
+  type    = bool
+  default = false
+}
+
+variable "template_manager_hpa_min_replicas" {
+  type    = number
+  default = 1
+}
+
+variable "template_manager_hpa_max_replicas" {
+  type    = number
+  default = 5
+}
+
+variable "template_manager_hpa_cpu_target" {
+  type    = number
+  default = 70
+}
+
+variable "template_manager_hpa_memory_target" {
+  type    = number
+  default = 80
+}
+
 # Logs
 variable "loki_machine_count" {
   type = number
@@ -338,6 +364,42 @@ variable "filestore_cache_cleanup_max_retries" {
 }
 
 variable "dockerhub_remote_repository_url" {
+  type    = string
+  default = ""
+}
+
+# Volume content signing
+variable "persistent_volume_mounts" {
+  description = "Map of persistent volume type names to their mount paths"
+  type        = map(string)
+  default     = {}
+}
+
+variable "default_persistent_volume_type" {
+  description = "Default persistent volume type name"
+  type        = string
+  default     = ""
+}
+
+# Volume content signing
+variable "volume_token_issuer" {
+  type = string
+}
+
+variable "volume_token_signing_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "volume_token_signing_key_name" {
+  type = string
+}
+
+variable "volume_token_signing_method" {
+  type = string
+}
+
+variable "volume_token_duration" {
   type    = string
   default = ""
 }

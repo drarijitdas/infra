@@ -74,6 +74,30 @@ variable "client_hugepages_percentage" {
   default     = 80
 }
 
+variable "client_pools" {
+  description = "Map of client NodePool configs for heterogeneous hardware. When empty, a single pool is created from client_instance_types/client_capacity_types."
+  type = map(object({
+    instance_types      = list(string)
+    capacity_types      = optional(list(string), ["on-demand", "spot"])
+    cpu_limit           = optional(string, "1000")
+    memory_limit        = optional(string, "2000Gi")
+    consolidation_after = optional(string, "300s")
+  }))
+  default = {}
+}
+
+variable "build_pools" {
+  description = "Map of build NodePool configs. When empty, a single pool is created from build_instance_types."
+  type = map(object({
+    instance_types      = list(string)
+    capacity_types      = optional(list(string), ["spot", "on-demand"])
+    cpu_limit           = optional(string, "500")
+    memory_limit        = optional(string, "1000Gi")
+    consolidation_after = optional(string, "60s")
+  }))
+  default = {}
+}
+
 # --- API Configuration ---
 variable "api_cluster_size" {
   type = number
@@ -263,6 +287,26 @@ variable "envd_timeout" {
   default = "40s"
 }
 
+# --- Template Manager Autoscaling ---
+
+variable "template_manager_hpa_enabled" {
+  description = "Enable HPA for template-manager Deployment"
+  type        = bool
+  default     = false
+}
+
+variable "template_manager_hpa_min_replicas" {
+  description = "Minimum replicas for template-manager HPA"
+  type        = number
+  default     = 1
+}
+
+variable "template_manager_hpa_max_replicas" {
+  description = "Maximum replicas for template-manager HPA"
+  type        = number
+  default     = 5
+}
+
 variable "environment" {
   type    = string
   default = "prod"
@@ -372,6 +416,20 @@ variable "efs_cache_enabled" {
   type        = bool
   description = "Set to true to enable EFS shared cache (replaces GCP Filestore)"
   default     = false
+}
+
+variable "persistent_volume_types" {
+  description = "Map of persistent volume type names to their configs. Each creates an EFS access point. Requires efs_cache_enabled = true."
+  type = map(object({
+    capacity_gb = optional(number, 100)
+  }))
+  default = {}
+}
+
+variable "default_persistent_volume_type" {
+  description = "Default persistent volume type name (must be a key in persistent_volume_types)"
+  type        = string
+  default     = ""
 }
 
 # --- Compliance Services ---
@@ -604,6 +662,35 @@ variable "loki_use_v13_schema_from" {
 variable "dockerhub_remote_repository_url" {
   type    = string
   default = ""
+}
+
+# --- Volume Content Signing ---
+
+variable "enable_dockerhub_pull_through_cache" {
+  description = "Enable ECR pull-through cache for Docker Hub to avoid rate limits"
+  type        = bool
+  default     = false
+}
+
+# --- Volume Content Signing ---
+
+variable "volume_token_issuer" {
+  type    = string
+  default = ""
+}
+
+variable "volume_token_valid_for" {
+  type    = string
+  default = ""
+}
+
+variable "volume_token_signature" {
+  type = object({
+    key    = string
+    name   = string
+    method = string
+  })
+  default = null
 }
 
 # --- Temporal Configuration ---

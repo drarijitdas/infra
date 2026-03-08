@@ -1197,6 +1197,47 @@ resource "kubernetes_daemon_set_v1" "orchestrator" {
             value = "AWSBucket"
           }
 
+          dynamic "env" {
+            for_each = length(var.persistent_volume_mounts) > 0 ? [1] : []
+            content {
+              name  = "PERSISTENT_VOLUME_MOUNTS"
+              value = join(",", [for key, path in var.persistent_volume_mounts : "${key}:${path}"])
+            }
+          }
+
+          dynamic "env" {
+            for_each = var.default_persistent_volume_type != "" ? [1] : []
+            content {
+              name  = "DEFAULT_PERSISTENT_VOLUME_TYPE"
+              value = var.default_persistent_volume_type
+            }
+          }
+
+          env {
+            name  = "VOLUME_TOKEN_ISSUER"
+            value = var.volume_token_issuer
+          }
+
+          env {
+            name  = "VOLUME_TOKEN_SIGNING_KEY"
+            value = var.volume_token_signing_key
+          }
+
+          env {
+            name  = "VOLUME_TOKEN_SIGNING_KEY_NAME"
+            value = var.volume_token_signing_key_name
+          }
+
+          env {
+            name  = "VOLUME_TOKEN_SIGNING_METHOD"
+            value = var.volume_token_signing_method
+          }
+
+          env {
+            name  = "VOLUME_TOKEN_DURATION"
+            value = var.volume_token_duration
+          }
+
           env_from {
             secret_ref {
               name = kubernetes_secret_v1.e2b_secrets.metadata[0].name
@@ -1424,6 +1465,50 @@ resource "kubernetes_deployment_v1" "template_manager" {
             path = "/mnt/cache"
             type = "DirectoryOrCreate"
           }
+        }
+      }
+    }
+  }
+}
+
+# --- Template Manager HPA ---
+resource "kubernetes_horizontal_pod_autoscaler_v2" "template_manager" {
+  count = var.template_manager_hpa_enabled ? 1 : 0
+
+  metadata {
+    name      = "template-manager"
+    namespace = kubernetes_namespace_v1.e2b.metadata[0].name
+    labels    = merge(local.common_labels, { "app.kubernetes.io/name" = "template-manager" })
+  }
+
+  spec {
+    scale_target_ref {
+      api_version = "apps/v1"
+      kind        = "Deployment"
+      name        = kubernetes_deployment_v1.template_manager.metadata[0].name
+    }
+
+    min_replicas = var.template_manager_hpa_min_replicas
+    max_replicas = var.template_manager_hpa_max_replicas
+
+    metric {
+      type = "Resource"
+      resource {
+        name = "cpu"
+        target {
+          type                = "Utilization"
+          average_utilization = var.template_manager_hpa_cpu_target
+        }
+      }
+    }
+
+    metric {
+      type = "Resource"
+      resource {
+        name = "memory"
+        target {
+          type                = "Utilization"
+          average_utilization = var.template_manager_hpa_memory_target
         }
       }
     }

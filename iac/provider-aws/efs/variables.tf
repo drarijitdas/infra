@@ -16,3 +16,11 @@ variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)
 }
+
+variable "persistent_volume_types" {
+  description = "Map of persistent volume type names to their capacity configs. Each creates an EFS access point."
+  type = map(object({
+    capacity_gb = optional(number, 100)
+  }))
+  default = {}
+}

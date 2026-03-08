@@ -1,3 +1,27 @@
+# --- Computed pool maps ---
+# When no explicit pools are configured, create a single default pool from the legacy variables.
+locals {
+  effective_client_pools = length(var.client_pools) > 0 ? var.client_pools : {
+    client = {
+      instance_types      = var.client_instance_types
+      capacity_types      = var.client_capacity_types
+      cpu_limit           = var.client_nodepool_cpu_limit
+      memory_limit        = var.client_nodepool_memory_limit
+      consolidation_after = var.client_consolidation_after
+    }
+  }
+
+  effective_build_pools = length(var.build_pools) > 0 ? var.build_pools : {
+    build = {
+      instance_types      = var.build_instance_types
+      capacity_types      = ["spot", "on-demand"]
+      cpu_limit           = var.build_nodepool_cpu_limit
+      memory_limit        = var.build_nodepool_memory_limit
+      consolidation_after = var.build_consolidation_after
+    }
+  }
+}
+
 # --- EC2NodeClass for Firecracker-capable nodes ---
 resource "kubectl_manifest" "ec2nodeclass_c8i_firecracker" {
   yaml_body = yamlencode({
@@ -71,13 +95,15 @@ resource "kubectl_manifest" "ec2nodeclass_c8i_firecracker" {
   depends_on = [helm_release.karpenter]
 }
 
-# --- Client NodePool (orchestrator workloads) ---
+# --- Client NodePools (orchestrator workloads) ---
 resource "kubectl_manifest" "nodepool_client" {
+  for_each = local.effective_client_pools
+
   yaml_body = yamlencode({
     apiVersion = "karpenter.sh/v1"
     kind       = "NodePool"
     metadata = {
-      name = "client"
+      name = each.key
     }
     spec = {
       template = {
@@ -101,12 +127,12 @@ resource "kubectl_manifest" "nodepool_client" {
             {
               key      = "karpenter.sh/capacity-type"
               operator = "In"
-              values   = var.client_capacity_types
+              values   = each.value.capacity_types
             },
             {
               key      = "node.kubernetes.io/instance-type"
               operator = "In"
-              values   = var.client_instance_types
+              values   = each.value.instance_types
             }
           ]
           taints = [
@@ -127,11 +153,11 @@ resource "kubectl_manifest" "nodepool_client" {
       }
       disruption = {
         consolidationPolicy = "WhenEmptyOrUnderutilized"
-        consolidateAfter    = var.client_consolidation_after
+        consolidateAfter    = each.value.consolidation_after
       }
       limits = {
-        cpu    = var.client_nodepool_cpu_limit
-        memory = var.client_nodepool_memory_limit
+        cpu    = each.value.cpu_limit
+        memory = each.value.memory_limit
       }
     }
   })
@@ -139,13 +165,15 @@ resource "kubectl_manifest" "nodepool_client" {
   depends_on = [kubectl_manifest.ec2nodeclass_c8i_firecracker]
 }
 
-# --- Build NodePool (template-manager workloads, scale-to-zero) ---
+# --- Build NodePools (template-manager workloads, scale-to-zero) ---
 resource "kubectl_manifest" "nodepool_build" {
+  for_each = local.effective_build_pools
+
   yaml_body = yamlencode({
     apiVersion = "karpenter.sh/v1"
     kind       = "NodePool"
     metadata = {
-      name = "build"
+      name = each.key
     }
     spec = {
       template = {
@@ -169,12 +197,12 @@ resource "kubectl_manifest" "nodepool_build" {
             {
               key      = "karpenter.sh/capacity-type"
               operator = "In"
-              values   = ["spot", "on-demand"]
+              values   = each.value.capacity_types
             },
             {
               key      = "node.kubernetes.io/instance-type"
               operator = "In"
-              values   = var.build_instance_types
+              values   = each.value.instance_types
             }
           ]
           taints = [
@@ -195,11 +223,11 @@ resource "kubectl_manifest" "nodepool_build" {
       }
       disruption = {
         consolidationPolicy = "WhenEmptyOrUnderutilized"
-        consolidateAfter    = var.build_consolidation_after
+        consolidateAfter    = each.value.consolidation_after
       }
       limits = {
-        cpu    = var.build_nodepool_cpu_limit
-        memory = var.build_nodepool_memory_limit
+        cpu    = each.value.cpu_limit
+        memory = each.value.memory_limit
       }
     }
   })

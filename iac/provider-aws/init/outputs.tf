@@ -107,3 +107,8 @@ output "dockerhub_username_secret_arn" {
 output "dockerhub_password_secret_arn" {
   value = aws_secretsmanager_secret.dockerhub_password.arn
 }
+
+output "dockerhub_pull_through_cache_repository_prefix" {
+  description = "ECR repository prefix for Docker Hub pull-through cache"
+  value       = var.enable_dockerhub_pull_through_cache ? "dockerhub" : ""
+}

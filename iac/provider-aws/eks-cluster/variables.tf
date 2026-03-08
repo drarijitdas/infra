@@ -20,21 +20,45 @@ variable "subnet_ids" {
 }
 
 variable "client_instance_types" {
-  description = "Instance types for the client (orchestrator) Karpenter NodePool"
+  description = "Instance types for the default client Karpenter NodePool (used when client_pools is empty)"
   type        = list(string)
   default     = ["c8i.2xlarge", "c8i.4xlarge", "c8i.8xlarge"]
 }
 
 variable "build_instance_types" {
-  description = "Instance types for the build (template-manager) Karpenter NodePool"
+  description = "Instance types for the default build Karpenter NodePool (used when build_pools is empty)"
   type        = list(string)
   default     = ["c8i.2xlarge", "c8i.4xlarge", "c8i.8xlarge"]
 }
 
 variable "client_capacity_types" {
-  description = "Capacity types for client NodePool (on-demand, spot). Spot enables lower-cost scale-to-zero."
+  description = "Capacity types for default client NodePool (on-demand, spot)"
   type        = list(string)
   default     = ["on-demand", "spot"]
+}
+
+variable "client_pools" {
+  description = "Map of additional client NodePool configs. Each creates a separate Karpenter NodePool + EC2NodeClass. When empty, a single 'client' pool is created from the default variables."
+  type = map(object({
+    instance_types      = list(string)
+    capacity_types      = optional(list(string), ["on-demand", "spot"])
+    cpu_limit           = optional(string, "1000")
+    memory_limit        = optional(string, "2000Gi")
+    consolidation_after = optional(string, "300s")
+  }))
+  default = {}
+}
+
+variable "build_pools" {
+  description = "Map of additional build NodePool configs. When empty, a single 'build' pool is created from the default variables."
+  type = map(object({
+    instance_types      = list(string)
+    capacity_types      = optional(list(string), ["spot", "on-demand"])
+    cpu_limit           = optional(string, "500")
+    memory_limit        = optional(string, "1000Gi")
+    consolidation_after = optional(string, "60s")
+  }))
+  default = {}
 }
 
 variable "eks_ami_id" {

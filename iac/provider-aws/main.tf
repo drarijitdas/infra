@@ -40,6 +40,11 @@ terraform {
       source  = "hashicorp/tls"
       version = "4.1.0"
     }
+
+    time = {
+      source  = "hashicorp/time"
+      version = "0.12.1"
+    }
   }
 }
 
@@ -125,6 +130,8 @@ module "init" {
   template_bucket_name     = var.template_bucket_name
   enable_s3_access_logging = var.enable_s3_access_logging
   s3_kms_key_arn           = module.security.s3_kms_key_arn
+
+  enable_dockerhub_pull_through_cache = var.enable_dockerhub_pull_through_cache
 }
 
 module "security" {
@@ -172,6 +179,8 @@ module "efs" {
   prefix     = var.prefix
   subnet_ids = module.network.private_subnet_ids
   efs_sg_id  = module.network.efs_security_group_id
+
+  persistent_volume_types = var.persistent_volume_types
 
   tags = var.tags
 }
@@ -225,6 +234,10 @@ module "eks_cluster" {
 
   efs_dns_name   = var.efs_cache_enabled ? module.efs[0].efs_dns_name : ""
   efs_mount_path = "/orchestrator/shared-store"
+
+  # Multiple NodePools
+  client_pools = var.client_pools
+  build_pools  = var.build_pools
 
   # EKS cluster logging
   eks_cluster_log_types  = var.eks_cluster_log_types
@@ -336,7 +349,10 @@ module "kubernetes" {
   envd_timeout                = var.envd_timeout
 
   # Template manager
-  template_manager_port   = var.template_manager_port
+  template_manager_port             = var.template_manager_port
+  template_manager_hpa_enabled      = var.template_manager_hpa_enabled
+  template_manager_hpa_min_replicas = var.template_manager_hpa_min_replicas
+  template_manager_hpa_max_replicas = var.template_manager_hpa_max_replicas
   template_bucket_name    = module.init.fc_template_bucket_name
   build_cache_bucket_name = module.init.fc_build_cache_bucket_name
 
@@ -368,6 +384,17 @@ module "kubernetes" {
 
   # DockerHub
   dockerhub_remote_repository_url = var.dockerhub_remote_repository_url
+
+  # Persistent volume types
+  persistent_volume_mounts       = var.efs_cache_enabled ? module.efs[0].persistent_volume_mounts : {}
+  default_persistent_volume_type = var.default_persistent_volume_type
+
+  # Volume content signing
+  volume_token_issuer           = local.volume_token_issuer
+  volume_token_signing_key      = local.volume_token_signing_key
+  volume_token_signing_key_name = local.volume_token_signature_name
+  volume_token_signing_method   = local.volume_token_signature_method
+  volume_token_duration         = var.volume_token_valid_for
 
   # Filestore / EFS
   shared_chunk_cache_path                       = module.eks_cluster.shared_chunk_cache_path

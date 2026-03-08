@@ -179,6 +179,57 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
+  # Rate limit: WebSocket connection requests per sandbox host
+  rule {
+    name     = "session-throttle-by-host"
+    priority = 55
+
+    action {
+      block {
+        custom_response {
+          response_code = 429
+        }
+      }
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 200
+        aggregate_key_type = "CUSTOM_KEYS"
+
+        custom_key {
+          header {
+            name = "host"
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/ws"
+            positional_constraint = "STARTS_WITH"
+            field_to_match {
+              uri_path {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.prefix}session-throttle-by-host"
+    }
+  }
+
   # Rate limit: all requests per IP
   rule {
     name     = "ip-rate-limit"

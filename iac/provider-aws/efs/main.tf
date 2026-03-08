@@ -47,3 +47,29 @@ resource "aws_efs_access_point" "chunks_cache" {
     Name = "${var.prefix}chunks-cache"
   })
 }
+
+# --- Persistent Volume Types ---
+resource "aws_efs_access_point" "persistent_volume" {
+  for_each = var.persistent_volume_types
+
+  file_system_id = aws_efs_file_system.shared_cache.id
+
+  posix_user {
+    gid = 0
+    uid = 0
+  }
+
+  root_directory {
+    path = "/persistent-volumes/${each.key}"
+
+    creation_info {
+      owner_gid   = 0
+      owner_uid   = 0
+      permissions = "0755"
+    }
+  }
+
+  tags = merge(var.tags, {
+    Name = "${var.prefix}persistent-volume-${each.key}"
+  })
+}

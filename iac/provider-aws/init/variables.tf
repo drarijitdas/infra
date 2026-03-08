@@ -38,3 +38,9 @@ variable "allow_force_destroy" {
   type        = bool
   default     = false
 }
+
+variable "enable_dockerhub_pull_through_cache" {
+  description = "Enable ECR pull-through cache for Docker Hub to avoid rate limits. Requires Docker Hub credentials in Secrets Manager."
+  type        = bool
+  default     = false
+}
