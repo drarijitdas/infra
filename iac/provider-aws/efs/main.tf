@@ -4,6 +4,14 @@ resource "aws_efs_file_system" "shared_cache" {
   performance_mode = "generalPurpose"
   throughput_mode  = "elastic"
 
+  lifecycle_policy {
+    transition_to_ia = "AFTER_30_DAYS"
+  }
+
+  lifecycle_policy {
+    transition_to_primary_storage_class = "AFTER_1_ACCESS"
+  }
+
   tags = merge(var.tags, {
     Name = "${var.prefix}shared-cache"
   })

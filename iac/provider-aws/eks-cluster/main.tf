@@ -28,11 +28,12 @@ module "eks" {
 
   # Core EKS addons
   addons = {
-    coredns                = {}
-    kube-proxy             = {}
-    vpc-cni                = {}
-    eks-pod-identity-agent = {}
-    aws-ebs-csi-driver     = {}
+    coredns                          = {}
+    kube-proxy                       = {}
+    vpc-cni                          = {}
+    eks-pod-identity-agent           = {}
+    aws-ebs-csi-driver               = {}
+    amazon-cloudwatch-observability  = {}
   }
 
   # Bootstrap managed node group for Karpenter + system pods

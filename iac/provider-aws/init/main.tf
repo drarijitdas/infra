@@ -64,15 +64,21 @@ resource "aws_iam_role_policy" "ecr_access" {
       {
         Effect = "Allow"
         Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
           "ecr:BatchCheckLayerAvailability",
-          "ecr:GetAuthorizationToken",
           "ecr:DescribeRepositories",
           "ecr:ListImages",
           "ecr:DescribeImages"
         ]
-        Resource = "*"
+        Resource = "arn:aws:ecr:${var.aws_region}:*:repository/${var.prefix}*"
       }
     ]
   })
@@ -107,15 +113,19 @@ resource "aws_iam_role_policy" "cloudwatch_access" {
     Version = "2012-10-17"
     Statement = [
       {
+        Effect   = "Allow"
+        Action   = "cloudwatch:PutMetricData"
+        Resource = "*"
+      },
+      {
         Effect = "Allow"
         Action = [
-          "cloudwatch:PutMetricData",
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents",
           "logs:DescribeLogStreams"
         ]
-        Resource = "*"
+        Resource = "arn:aws:logs:${var.aws_region}:*:log-group:/${var.prefix}*"
       }
     ]
   })

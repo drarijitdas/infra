@@ -47,6 +47,55 @@ resource "aws_guardduty_detector_feature" "runtime_monitoring" {
   }
 }
 
+# --- GuardDuty → SNS Alerting ---
+# Route GuardDuty findings to SNS for notifications
+
+resource "aws_cloudwatch_event_rule" "guardduty_findings" {
+  count = var.enable_guardduty && var.sns_topic_arn != "" ? 1 : 0
+
+  name        = "${var.prefix}guardduty-findings"
+  description = "Route GuardDuty findings to SNS"
+
+  event_pattern = jsonencode({
+    source      = ["aws.guardduty"]
+    detail-type = ["GuardDuty Finding"]
+    detail = {
+      severity = [{ numeric = [">=", 4] }]
+    }
+  })
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "guardduty_sns" {
+  count = var.enable_guardduty && var.sns_topic_arn != "" ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.guardduty_findings[0].name
+  target_id = "${var.prefix}guardduty-to-sns"
+  arn       = var.sns_topic_arn
+}
+
+resource "aws_sns_topic_policy" "guardduty_publish" {
+  count = var.enable_guardduty && var.sns_topic_arn != "" ? 1 : 0
+
+  arn = var.sns_topic_arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowEventBridgePublish"
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action   = "sns:Publish"
+        Resource = var.sns_topic_arn
+      }
+    ]
+  })
+}
+
 # --- AWS Config ---
 # Continuous configuration compliance monitoring and drift detection (ISO 27001)
 

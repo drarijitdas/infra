@@ -130,8 +130,8 @@ resource "kubectl_manifest" "nodepool_client" {
         consolidateAfter    = var.client_consolidation_after
       }
       limits = {
-        cpu    = "1000"
-        memory = "2000Gi"
+        cpu    = var.client_nodepool_cpu_limit
+        memory = var.client_nodepool_memory_limit
       }
     }
   })
@@ -198,8 +198,8 @@ resource "kubectl_manifest" "nodepool_build" {
         consolidateAfter    = var.build_consolidation_after
       }
       limits = {
-        cpu    = "500"
-        memory = "1000Gi"
+        cpu    = var.build_nodepool_cpu_limit
+        memory = var.build_nodepool_memory_limit
       }
     }
   })

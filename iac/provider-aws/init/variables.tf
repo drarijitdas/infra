@@ -32,3 +32,9 @@ variable "s3_kms_key_arn" {
   type        = string
   default     = ""
 }
+
+variable "allow_force_destroy" {
+  description = "Allow force-deleting ECR repositories even if they contain images. Use with caution."
+  type        = bool
+  default     = false
+}

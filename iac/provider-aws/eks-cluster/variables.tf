@@ -132,6 +132,30 @@ variable "temporal_enabled" {
   default     = false
 }
 
+variable "client_nodepool_cpu_limit" {
+  description = "CPU limit for client Karpenter NodePool"
+  type        = string
+  default     = "1000"
+}
+
+variable "client_nodepool_memory_limit" {
+  description = "Memory limit for client Karpenter NodePool"
+  type        = string
+  default     = "2000Gi"
+}
+
+variable "build_nodepool_cpu_limit" {
+  description = "CPU limit for build Karpenter NodePool"
+  type        = string
+  default     = "500"
+}
+
+variable "build_nodepool_memory_limit" {
+  description = "Memory limit for build Karpenter NodePool"
+  type        = string
+  default     = "1000Gi"
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

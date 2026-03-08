@@ -34,3 +34,9 @@ variable "enable_cloudtrail" {
   type        = bool
   default     = true
 }
+
+variable "sns_topic_arn" {
+  description = "SNS topic ARN for GuardDuty finding notifications. Leave empty to disable alerting."
+  type        = string
+  default     = ""
+}

@@ -451,6 +451,30 @@ variable "build_consolidation_after" {
   default     = "60s"
 }
 
+variable "client_nodepool_cpu_limit" {
+  description = "CPU limit for client Karpenter NodePool"
+  type        = string
+  default     = "1000"
+}
+
+variable "client_nodepool_memory_limit" {
+  description = "Memory limit for client Karpenter NodePool (e.g. 2000Gi)"
+  type        = string
+  default     = "2000Gi"
+}
+
+variable "build_nodepool_cpu_limit" {
+  description = "CPU limit for build Karpenter NodePool"
+  type        = string
+  default     = "500"
+}
+
+variable "build_nodepool_memory_limit" {
+  description = "Memory limit for build Karpenter NodePool (e.g. 1000Gi)"
+  type        = string
+  default     = "1000Gi"
+}
+
 # --- EBS Performance ---
 
 variable "cache_disk_iops" {

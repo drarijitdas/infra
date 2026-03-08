@@ -414,3 +414,46 @@ resource "aws_s3_bucket_intelligent_tiering_configuration" "fc_build_cache" {
     days        = 90
   }
 }
+
+# --- S3 HTTPS-Only Bucket Policies ---
+# Deny non-SSL access to all data buckets
+
+locals {
+  https_enforced_buckets = {
+    fc_templates      = aws_s3_bucket.fc_templates.id
+    fc_kernels        = aws_s3_bucket.fc_kernels.id
+    fc_env_pipeline   = aws_s3_bucket.fc_env_pipeline.id
+    fc_versions       = aws_s3_bucket.fc_versions.id
+    fc_build_cache    = aws_s3_bucket.fc_build_cache.id
+    envs_docker_ctx   = aws_s3_bucket.envs_docker_context.id
+    clickhouse_backup = aws_s3_bucket.clickhouse_backups.id
+    instance_setup    = aws_s3_bucket.instance_setup.id
+  }
+}
+
+resource "aws_s3_bucket_policy" "enforce_https" {
+  for_each = local.https_enforced_buckets
+
+  bucket = each.value
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyNonSSLAccess"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          "arn:aws:s3:::${each.value}",
+          "arn:aws:s3:::${each.value}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}

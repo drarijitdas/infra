@@ -48,6 +48,9 @@ resource "aws_elasticache_replication_group" "redis" {
 
   port = 6379
 
+  snapshot_retention_limit = 7
+  snapshot_window          = "03:00-05:00"
+
   maintenance_window = "sun:01:00-sun:03:00"
 
   tags = merge(var.tags, {

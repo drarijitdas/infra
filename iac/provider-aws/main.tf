@@ -138,6 +138,8 @@ module "security" {
   enable_inspector  = var.enable_inspector
   enable_cloudtrail = var.enable_cloudtrail
 
+  sns_topic_arn = var.enable_monitoring ? module.monitoring[0].sns_topic_arn : ""
+
   tags = var.tags
 }
 
@@ -235,6 +237,12 @@ module "eks_cluster" {
   # EBS performance
   cache_disk_iops            = var.cache_disk_iops
   cache_disk_throughput_mbps = var.cache_disk_throughput_mbps
+
+  # Karpenter NodePool limits
+  client_nodepool_cpu_limit    = var.client_nodepool_cpu_limit
+  client_nodepool_memory_limit = var.client_nodepool_memory_limit
+  build_nodepool_cpu_limit     = var.build_nodepool_cpu_limit
+  build_nodepool_memory_limit  = var.build_nodepool_memory_limit
 
   # Temporal affects bootstrap pool sizing
   temporal_enabled = var.temporal_enabled

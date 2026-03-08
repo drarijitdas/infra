@@ -219,3 +219,33 @@ resource "aws_wafv2_web_acl_association" "alb" {
   resource_arn = aws_lb.alb.arn
   web_acl_arn  = aws_wafv2_web_acl.main.arn
 }
+
+# --- WAF Logging ---
+resource "aws_cloudwatch_log_group" "waf" {
+  name              = "aws-waf-logs-${var.prefix}waf"
+  retention_in_days = 90
+
+  tags = var.tags
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "main" {
+  log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
+  resource_arn            = aws_wafv2_web_acl.main.arn
+}
+
+resource "aws_cloudwatch_log_resource_policy" "waf" {
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "delivery.logs.amazonaws.com"
+        }
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.waf.arn}:*"
+      }
+    ]
+  })
+  policy_name = "${var.prefix}waf-logging"
+}
