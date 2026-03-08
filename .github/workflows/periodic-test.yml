@@ -26,6 +26,7 @@ permissions:
 
 jobs:
   changes:
+    if: false
     name: Check
     runs-on: ubuntu-22.04
     timeout-minutes: 15

@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: false
     name: Deploy Infra to the ${{ inputs.environment }} environment
     runs-on: ubuntu-22.04
     permissions:

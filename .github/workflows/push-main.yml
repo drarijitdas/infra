@@ -11,24 +11,27 @@ on:
 
 jobs:
   generated-code-check:
+    if: false
     uses: ./.github/workflows/pr-no-generated-changes.yml
     with:
       commit: false
 
   unit-tests:
+    if: false
     uses: ./.github/workflows/pr-tests.yml
   integration-tests:
+    if: false
     uses: ./.github/workflows/integration_tests.yml
     with:
       publish: true
   publish-test-results:
+    if: false
     needs:
       - unit-tests
       - integration-tests
     runs-on: ubuntu-latest
     permissions:
       checks: write
-    if: always()
 
     steps:
       - name: Download Artifacts

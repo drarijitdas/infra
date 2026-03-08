@@ -29,6 +29,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: false
     name: Build and upload job to the ${{ inputs.environment }} environment
     runs-on: ci-builder
     permissions:

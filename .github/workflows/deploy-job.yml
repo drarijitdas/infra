@@ -30,6 +30,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: false
     name: Deploy job to the ${{ inputs.environment }} environment
     runs-on: ubuntu-22.04
     permissions:
