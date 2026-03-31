@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/clickhouse/pkg/batcher"
-	flags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
+	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
 
@@ -23,15 +23,15 @@ const InsertSandboxHostStatQuery = `INSERT INTO sandbox_host_stats
     sandbox_team_id,
     sandbox_vcpu_count,
     sandbox_memory_mb,
-    firecracker_cpu_user_time,
-    firecracker_cpu_system_time,
-    firecracker_memory_rss,
-    firecracker_memory_vms,
     cgroup_cpu_usage_usec,
     cgroup_cpu_user_usec,
     cgroup_cpu_system_usec,
     cgroup_memory_usage_bytes,
     cgroup_memory_peak_bytes,
+    delta_cgroup_cpu_usage_usec,
+    delta_cgroup_cpu_user_usec,
+    delta_cgroup_cpu_system_usec,
+    interval_us,
     sandbox_type
 )
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -44,11 +44,11 @@ type ClickhouseDelivery struct {
 func NewDefaultClickhouseHostStatsDelivery(
 	ctx context.Context,
 	conn driver.Conn,
-	featureFlags *flags.Client,
+	featureFlags *featureflags.Client,
 ) (*ClickhouseDelivery, error) {
-	maxBatchSize := featureFlags.IntFlag(ctx, flags.ClickhouseBatcherMaxBatchSize)
-	maxDelay := time.Duration(featureFlags.IntFlag(ctx, flags.ClickhouseBatcherMaxDelay)) * time.Millisecond
-	batcherQueueSize := featureFlags.IntFlag(ctx, flags.ClickhouseBatcherQueueSize)
+	maxBatchSize := featureFlags.IntFlag(ctx, featureflags.ClickhouseBatcherMaxBatchSize)
+	maxDelay := time.Duration(featureFlags.IntFlag(ctx, featureflags.ClickhouseBatcherMaxDelay)) * time.Millisecond
+	batcherQueueSize := featureFlags.IntFlag(ctx, featureflags.ClickhouseBatcherQueueSize)
 
 	return NewClickhouseHostStatsDelivery(
 		ctx, conn, batcher.BatcherOptions{
@@ -115,15 +115,15 @@ func (c *ClickhouseDelivery) batchInserter(ctx context.Context, stats []SandboxH
 			stat.SandboxTeamID,
 			stat.SandboxVCPUCount,
 			stat.SandboxMemoryMB,
-			stat.FirecrackerCPUUserTime,
-			stat.FirecrackerCPUSystemTime,
-			stat.FirecrackerMemoryRSS,
-			stat.FirecrackerMemoryVMS,
 			stat.CgroupCPUUsageUsec,
 			stat.CgroupCPUUserUsec,
 			stat.CgroupCPUSystemUsec,
 			stat.CgroupMemoryUsage,
 			stat.CgroupMemoryPeak,
+			stat.DeltaCgroupCPUUsageUsec,
+			stat.DeltaCgroupCPUUserUsec,
+			stat.DeltaCgroupCPUSystemUsec,
+			stat.IntervalUs,
 			stat.SandboxType,
 		)
 		if err != nil {

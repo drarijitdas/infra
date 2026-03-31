@@ -21,25 +21,26 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	"golang.org/x/sys/unix"
 
+	"github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
 	"github.com/e2b-dev/infra/packages/orchestrator/cmd/internal/cmdutil"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
-	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block/metrics"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template/peerclient"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/tcpfirewall"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/rootfs"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
+	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block/metrics"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template/peerclient"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/tcpfirewall"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/rootfs"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
-	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
+	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process/processconnect"
-	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
@@ -50,6 +51,7 @@ func main() {
 	fromBuild := flag.String("from-build", "", "build ID (UUID) to resume from (required)")
 	toBuild := flag.String("to-build", "", "output build ID (UUID) for pause snapshot (auto-generated if not specified)")
 	storagePath := flag.String("storage", ".local-build", "storage: local path or gs://bucket")
+	sandboxDir := flag.String("sandbox-dir", "", "override SANDBOX_DIR (the rootfs path baked into the snapshot)")
 	iterations := flag.Int("iterations", 0, "run N iterations (0 = interactive)")
 	coldStart := flag.Bool("cold", false, "clear cache between iterations (cold start each time)")
 	noPrefetch := flag.Bool("no-prefetch", false, "disable memory prefetching")
@@ -62,6 +64,7 @@ func main() {
 	pause := flag.Bool("pause", false, "start and immediately pause (snapshot)")
 	signalPause := flag.String("signal-pause", "", "wait for signal before pause (e.g., SIGTERM, SIGUSR1)")
 	cmdPause := flag.String("cmd-pause", "", "execute command in sandbox, then pause on success")
+	cmdSignalPause := flag.String("cmd-signal-pause", "", "execute command in sandbox, then wait for SIGUSR1 before pausing")
 	optimize := flag.Bool("optimize", false, "collect fresh prefetch mapping after pause (resumes snapshot to record page faults)")
 
 	flag.Parse()
@@ -85,8 +88,11 @@ func main() {
 	if *cmdPause != "" {
 		pauseCount++
 	}
+	if *cmdSignalPause != "" {
+		pauseCount++
+	}
 	if pauseCount > 1 {
-		log.Fatal("only one of -pause, -signal-pause, or -cmd-pause can be specified")
+		log.Fatal("only one of -pause, -signal-pause, -cmd-pause, or -cmd-signal-pause can be specified")
 	}
 
 	// -cmd is incompatible with pause flags
@@ -97,18 +103,18 @@ func main() {
 
 	isPauseMode := pauseCount > 0
 
-	// -signal-pause and -cmd-pause are incompatible with iterations (they require interaction)
-	if *iterations > 0 && (*signalPause != "" || *cmdPause != "") {
-		log.Fatal("-signal-pause and -cmd-pause are incompatible with -iterations")
+	// Interactive pause modes are incompatible with iterations.
+	if *iterations > 0 && (*signalPause != "" || *cmdPause != "" || *cmdSignalPause != "") {
+		log.Fatal("-signal-pause, -cmd-pause, and -cmd-signal-pause are incompatible with -iterations")
 	}
 
 	// -to-build only makes sense with pause
 	if *toBuild != "" && !isPauseMode {
-		log.Fatal("-to-build requires a pause flag (-pause, -signal-pause, or -cmd-pause)")
+		log.Fatal("-to-build requires a pause flag (-pause, -signal-pause, -cmd-pause, or -cmd-signal-pause)")
 	}
 
 	if *optimize && !isPauseMode {
-		log.Fatal("-optimize requires a pause flag (-pause, -signal-pause, or -cmd-pause)")
+		log.Fatal("-optimize requires a pause flag (-pause, -signal-pause, -cmd-pause, or -cmd-signal-pause)")
 	}
 	if *optimize && *iterations > 0 {
 		log.Fatal("-optimize is incompatible with -iterations (benchmarking doesn't upload)")
@@ -120,7 +126,7 @@ func main() {
 		outputBuildID = uuid.New().String()
 	}
 
-	if err := setupEnv(*storagePath); err != nil {
+	if err := setupEnv(*storagePath, *sandboxDir); err != nil {
 		log.Fatal(err)
 	}
 
@@ -135,6 +141,7 @@ func main() {
 		immediate:       *pause,
 		signalName:      *signalPause,
 		command:         *cmdPause,
+		commandSignal:   *cmdSignalPause,
 		storagePath:     *storagePath,
 		isRemoteStorage: isRemoteStorage,
 		newBuildID:      outputBuildID,
@@ -163,6 +170,7 @@ type pauseOptions struct {
 	immediate       bool
 	signalName      string
 	command         string
+	commandSignal   string
 	storagePath     string
 	isRemoteStorage bool
 	newBuildID      string
@@ -171,7 +179,7 @@ type pauseOptions struct {
 }
 
 func (p pauseOptions) enabled() bool {
-	return p.immediate || p.signalName != "" || p.command != ""
+	return p.immediate || p.signalName != "" || p.command != "" || p.commandSignal != ""
 }
 
 // pauseTimings holds timing breakdown for a pause operation
@@ -199,8 +207,12 @@ type cmdTimings struct {
 	err     error
 }
 
-func setupEnv(from string) error {
+func setupEnv(from string, sandboxDir string) error {
 	abs := func(s string) string { return utils.Must(filepath.Abs(s)) }
+
+	if sandboxDir != "" {
+		os.Setenv("SANDBOX_DIR", sandboxDir)
+	}
 
 	// Derive dataDir from 'from' when it's a local path
 	var dataDir string
@@ -228,7 +240,6 @@ func setupEnv(from string) error {
 		"HOST_ENVD_PATH":              abs(filepath.Join(dataDir, "envd", "envd")),
 		"HOST_KERNELS_DIR":            abs(filepath.Join(dataDir, "kernels")),
 		"ORCHESTRATOR_BASE_PATH":      abs(filepath.Join(dataDir, "orchestrator")),
-		"SANDBOX_DIR":                 abs(filepath.Join(dataDir, "sandbox")),
 		"SNAPSHOT_CACHE_DIR":          abs(filepath.Join(dataDir, "snapshot-cache")),
 		"USE_LOCAL_NAMESPACE_STORAGE": "true",
 	}
@@ -252,9 +263,8 @@ func setupEnv(from string) error {
 
 type runner struct {
 	factory    *sandbox.Factory
-	sandboxes  *sandbox.Map
 	tmpl       template.Template
-	sbxConfig  sandbox.Config
+	sbxConfig  *sandbox.Config
 	buildID    string
 	cache      *template.Cache
 	coldStart  bool
@@ -297,12 +307,8 @@ func (r *runner) interactive(ctx context.Context) error {
 		return err
 	}
 
-	// Register sandbox in map for TCP firewall to find
-	r.sandboxes.Insert(sbx)
-	defer r.sandboxes.Remove(runtime.SandboxID)
-
 	fmt.Printf("✅ Running (resumed in %s)\n", time.Since(t0))
-	fmt.Printf("   sudo nsenter --net=/var/run/netns/%s ssh -o StrictHostKeyChecking=no root@169.254.0.21\n", sbx.Slot.NamespaceID())
+	fmt.Printf("   sudo nsenter --net=/var/run/netns/%s ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@169.254.0.21\n", sbx.Slot.NamespaceID())
 	fmt.Println("Ctrl+C to stop")
 
 	<-ctx.Done()
@@ -340,10 +346,6 @@ func (r *runner) cmdOnce(ctx context.Context, opts runOptions, verbose bool) (cm
 		return cmdTimings{resume: resumeDur, err: err}, err
 	}
 	defer sbx.Close(context.WithoutCancel(ctx))
-
-	// Register sandbox in map for TCP firewall to find
-	r.sandboxes.Insert(sbx)
-	defer r.sandboxes.Remove(runtime.SandboxID)
 
 	if verbose {
 		fmt.Printf("✅ Sandbox resumed in %s\n", resumeDur)
@@ -548,16 +550,13 @@ func (r *runner) pauseOnce(ctx context.Context, opts pauseOptions, verbose bool)
 	}
 	defer sbx.Close(context.WithoutCancel(ctx))
 
-	// Register sandbox in map for TCP firewall to find
-	r.sandboxes.Insert(sbx)
-	defer r.sandboxes.Remove(runtime.SandboxID)
-
 	if verbose {
 		fmt.Printf("✅ Sandbox resumed in %s\n", resumeDur)
 	}
 
 	// Handle pause trigger based on options
-	if opts.command != "" {
+	switch {
+	case opts.command != "":
 		if verbose {
 			fmt.Printf("🔧 Running command: %s\n", opts.command)
 		}
@@ -567,23 +566,17 @@ func (r *runner) pauseOnce(ctx context.Context, opts pauseOptions, verbose bool)
 		if verbose {
 			fmt.Println("✅ Command completed successfully")
 		}
-	} else if opts.signalName != "" {
-		sig := parseSignal(opts.signalName)
-		if sig == nil {
-			err := fmt.Errorf("unknown signal: %s", opts.signalName)
-
+	case opts.commandSignal != "":
+		if verbose {
+			fmt.Printf("🔧 Starting command: %s\n", opts.commandSignal)
+		}
+		cmdErrCh := runCommandInSandboxAsync(ctx, sbx, opts.commandSignal)
+		if err := waitForPauseSignal(ctx, sbx, "SIGUSR1", cmdErrCh); err != nil {
 			return pauseTimings{resume: resumeDur, err: err}, err
 		}
-		fmt.Printf("⏳ Waiting for %s signal...\n", opts.signalName)
-		fmt.Printf("   sudo nsenter --net=/var/run/netns/%s ssh -o StrictHostKeyChecking=no root@169.254.0.21\n", sbx.Slot.NamespaceID())
-
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, sig)
-		select {
-		case <-ctx.Done():
-			return pauseTimings{resume: resumeDur, err: ctx.Err()}, ctx.Err()
-		case <-sigCh:
-			fmt.Printf("📨 Received %s signal\n", opts.signalName)
+	case opts.signalName != "":
+		if err := waitForPauseSignal(ctx, sbx, opts.signalName, nil); err != nil {
+			return pauseTimings{resume: resumeDur, err: err}, err
 		}
 	}
 	// For opts.immediate, we proceed directly to pause
@@ -985,9 +978,27 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 	}
 
 	if verbose {
+		fmt.Println("🔧 Creating feature flags client...")
+	}
+	logLevel := ldlog.Error
+	if verbose {
+		logLevel = ldlog.Info
+	}
+	flags, _ := featureflags.NewClientWithLogLevel(logLevel)
+
+	sandboxes := sandbox.NewSandboxesMap()
+
+	if verbose {
+		fmt.Println("🔧 Starting TCP firewall...")
+	}
+	tcpFw := tcpfirewall.New(l, config.NetworkConfig, sandboxes, noop.NewMeterProvider(), flags)
+	go tcpFw.Start(ctx)
+	defer tcpFw.Close(context.WithoutCancel(ctx))
+
+	if verbose {
 		fmt.Println("🔧 Creating network storage...")
 	}
-	slotStorage, err := network.NewStorageLocal(ctx, config.NetworkConfig)
+	slotStorage, err := network.NewStorageLocal(ctx, config.NetworkConfig, network.NoopEgressProxy{})
 	if err != nil {
 		return fmt.Errorf("network storage: %w", err)
 	}
@@ -1002,7 +1013,7 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 	if verbose {
 		fmt.Println("🔧 Creating NBD device pool...")
 	}
-	devicePool, err := nbd.NewDevicePool()
+	devicePool, err := nbd.NewDevicePool(config.NBDPoolSize)
 	if err != nil {
 		return fmt.Errorf("nbd pool: %w", err)
 	}
@@ -1010,18 +1021,9 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 	defer devicePool.Close(context.WithoutCancel(ctx))
 
 	if verbose {
-		fmt.Println("🔧 Creating feature flags client...")
-	}
-	logLevel := ldlog.Error
-	if verbose {
-		logLevel = ldlog.Info
-	}
-	flags, _ := featureflags.NewClientWithLogLevel(logLevel)
-
-	if verbose {
 		fmt.Println("🔧 Creating storage provider...")
 	}
-	persistence, err := storage.GetTemplateStorageProvider(ctx, nil)
+	persistence, err := storage.GetStorageProvider(ctx, storage.TemplateStorageConfig)
 	if verbose {
 		fmt.Println("🔧 Storage provider created, err:", err)
 	}
@@ -1050,15 +1052,7 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 	if verbose {
 		fmt.Println("🔧 Creating sandbox factory...")
 	}
-	sandboxes := sandbox.NewSandboxesMap()
-	factory := sandbox.NewFactory(config.BuilderConfig, networkPool, devicePool, flags, nil, nil)
-
-	if verbose {
-		fmt.Println("🔧 Starting TCP firewall...")
-	}
-	tcpFw := tcpfirewall.New(l, config.NetworkConfig, sandboxes, noop.NewMeterProvider(), flags)
-	go tcpFw.Start(ctx)
-	defer tcpFw.Close(context.WithoutCancel(ctx))
+	factory := sandbox.NewFactory(config.BuilderConfig, networkPool, devicePool, flags, hoststats.NewNoopDelivery(), cgroup.NewNoopManager(), sandboxes)
 
 	fmt.Printf("📦 Loading %s...\n", buildID)
 	tmpl, err := cache.GetTemplate(ctx, buildID, false, false)
@@ -1080,9 +1074,19 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 	}
 
 	token := "local"
+	sbxCfg := sandbox.NewConfig(sandbox.Config{
+		BaseTemplateID: buildID,
+		Vcpu:           1,
+		RamMB:          512,
+		Envd:           sandbox.EnvdMetadata{Vars: map[string]string{}, AccessToken: &token, Version: "1.0.0"},
+		FirecrackerConfig: fc.Config{
+			KernelVersion:      meta.Template.KernelVersion,
+			FirecrackerVersion: meta.Template.FirecrackerVersion,
+		},
+	})
+
 	r := &runner{
 		factory:    factory,
-		sandboxes:  sandboxes,
 		tmpl:       tmpl,
 		buildID:    buildID,
 		cache:      cache,
@@ -1090,17 +1094,7 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 		noPrefetch: noPrefetch,
 		config:     config.BuilderConfig,
 		storage:    persistence,
-		sbxConfig: sandbox.Config{
-			BaseTemplateID: buildID,
-			Vcpu:           1,
-			RamMB:          512,
-			Network:        &orchestrator.SandboxNetworkConfig{},
-			Envd:           sandbox.EnvdMetadata{Vars: map[string]string{}, AccessToken: &token, Version: "1.0.0"},
-			FirecrackerConfig: fc.Config{
-				KernelVersion:      meta.Template.KernelVersion,
-				FirecrackerVersion: meta.Template.FirecrackerVersion,
-			},
-		},
+		sbxConfig:  sbxCfg,
 	}
 
 	if runOpts.enabled() {
@@ -1206,6 +1200,53 @@ func runCommandInSandbox(ctx context.Context, sbx *sandbox.Sandbox, command stri
 	}
 
 	return nil
+}
+
+func runCommandInSandboxAsync(ctx context.Context, sbx *sandbox.Sandbox, command string) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runCommandInSandbox(ctx, sbx, command)
+		close(errCh)
+	}()
+
+	return errCh
+}
+
+func waitForPauseSignal(ctx context.Context, sbx *sandbox.Sandbox, signalName string, cmdErrCh <-chan error) error {
+	sig := parseSignal(signalName)
+	if sig == nil {
+		return fmt.Errorf("unknown signal: %s", signalName)
+	}
+
+	fmt.Printf("⏳ Waiting for %s signal...\n", signalName)
+	fmt.Printf("   sudo nsenter --net=/var/run/netns/%s ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@169.254.0.21\n", sbx.Slot.NamespaceID())
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, sig)
+	defer signal.Stop(sigCh)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-sigCh:
+			fmt.Printf("📨 Received %s signal\n", signalName)
+
+			return nil
+		case err, ok := <-cmdErrCh:
+			if !ok {
+				cmdErrCh = nil
+
+				continue
+			}
+			if err != nil {
+				fmt.Printf("⚠️  Command exited before pause signal: %v\n", err)
+			} else {
+				fmt.Println("ℹ️  Command completed before pause signal")
+			}
+			cmdErrCh = nil
+		}
+	}
 }
 
 // syncAndDropCaches syncs filesystem and drops caches before snapshot

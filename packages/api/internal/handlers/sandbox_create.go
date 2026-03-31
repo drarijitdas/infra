@@ -16,21 +16,24 @@ import (
 	"github.com/launchdarkly/go-sdk-common/v3/ldcontext"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 	"golang.org/x/net/idna"
 
 	"github.com/e2b-dev/infra/packages/api/internal/api"
 	templatecache "github.com/e2b-dev/infra/packages/api/internal/cache/templates"
 	"github.com/e2b-dev/infra/packages/api/internal/middleware/otel/metrics"
+	apiorch "github.com/e2b-dev/infra/packages/api/internal/orchestrator"
 	"github.com/e2b-dev/infra/packages/api/internal/sandbox"
-	"github.com/e2b-dev/infra/packages/api/internal/utils"
 	"github.com/e2b-dev/infra/packages/auth/pkg/auth"
 	sqlcdb "github.com/e2b-dev/infra/packages/db/client"
 	"github.com/e2b-dev/infra/packages/db/pkg/types"
 	"github.com/e2b-dev/infra/packages/db/queries"
 	"github.com/e2b-dev/infra/packages/shared/pkg/clusters"
-	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
+	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
+	"github.com/e2b-dev/infra/packages/shared/pkg/ginutils"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
+	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
@@ -58,7 +61,7 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 	traceID := span.SpanContext().TraceID().String()
 	c.Set("traceID", traceID)
 
-	body, err := utils.ParseBody[api.PostSandboxesJSONRequestBody](ctx, c)
+	body, err := ginutils.ParseBody[api.PostSandboxesJSONRequestBody](ctx, c)
 	if err != nil {
 		a.sendAPIStoreError(c, http.StatusBadRequest, fmt.Sprintf("Error when parsing request: %s", err))
 
@@ -113,11 +116,12 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 
 	alias := firstAlias(env.Aliases)
 	telemetry.SetAttributes(ctx,
-		attribute.String("env.team.id", teamInfo.Team.ID.String()),
+		telemetry.WithSandboxID(sandboxID),
 		telemetry.WithTemplateID(env.TemplateID),
+		telemetry.WithBuildID(build.ID.String()),
 		attribute.String("env.alias", alias),
-		attribute.String("env.kernel.version", build.KernelVersion),
-		attribute.String("env.firecracker.version", build.FirecrackerVersion),
+		telemetry.WithKernelVersion(build.KernelVersion),
+		telemetry.WithFirecrackerVersion(build.FirecrackerVersion),
 	)
 
 	autoPause := sharedUtils.DerefOrDefault(body.AutoPause, sandbox.AutoPauseDefault)
@@ -138,6 +142,10 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 	}
 
 	autoResume := buildAutoResumeConfig(body.AutoResume)
+	if autoResume != nil {
+		minAutoResumeTimeout := time.Duration(a.featureFlags.IntFlag(ctx, featureflags.MinAutoResumeTimeoutSeconds)) * time.Second
+		autoResume.Timeout = calculateTimeoutSeconds(timeout, minAutoResumeTimeout, teamInfo)
+	}
 
 	var envdAccessToken *string = nil
 	if body.Secure != nil && *body.Secure == true {
@@ -184,9 +192,15 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 	}
 
 	sbxVolumeMounts, err := convertAPIVolumesToOrchestratorVolumes(
-		ctx, a.sqlcDB, a.featureFlags, teamInfo.ID, apiVolumeMounts,
+		ctx, a.sqlcDB, a.featureFlags, teamInfo.ID, apiVolumeMounts, build,
 	)
 	if err != nil {
+		if errors.Is(err, errVolumesNotSupported) {
+			a.sendAPIStoreError(c, http.StatusBadRequest, err.Error())
+
+			return
+		}
+
 		if errors.Is(err, ErrVolumeMountsDisabled) {
 			a.sendAPIStoreError(c, http.StatusBadRequest, "Volume mounts are not enabled.")
 
@@ -206,27 +220,34 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 		return
 	}
 
+	getSandboxData := func(_ context.Context) (apiorch.SandboxMetadata, *api.APIError) {
+		// The data can't be influenced by action on the same sandbox as other operations,
+		// so it's safe to reuse the data
+		return apiorch.SandboxMetadata{
+			Metadata:            metadata,
+			EnvVars:             envVars,
+			Build:               *build,
+			AllowInternetAccess: allowInternetAccess,
+			Network:             network,
+			Alias:               alias,
+			TemplateID:          env.TemplateID,
+			BaseTemplateID:      env.TemplateID,
+			AutoPause:           autoPause,
+			AutoResume:          autoResume,
+			VolumeMounts:        sbxVolumeMounts,
+			EnvdAccessToken:     envdAccessToken,
+		}, nil
+	}
+
 	sbx, createErr := a.startSandbox(
 		ctx,
 		sandboxID,
 		timeout,
-		envVars,
-		metadata,
-		alias,
 		teamInfo,
-		*build,
+		getSandboxData,
 		&c.Request.Header,
 		false,
-		nil,
-		env.TemplateID,
-		env.TemplateID,
-		autoPause,
-		autoResume,
-		envdAccessToken,
-		allowInternetAccess,
-		network,
 		mcp,
-		sbxVolumeMounts,
 	)
 	if createErr != nil {
 		a.sendAPIStoreError(c, createErr.Code, createErr.ClientMsg)
@@ -291,19 +312,34 @@ func (im InvalidVolumeMountsError) Error() string {
 	return fmt.Sprintf("invalid mounts:\n%s", strings.Join(errs, "\n"))
 }
 
-func convertAPIVolumesToOrchestratorVolumes(
-	ctx context.Context,
-	sqlClient *sqlcdb.Client,
-	featureFlags featureFlagsClient,
-	teamID uuid.UUID,
-	volumeMounts []api.SandboxVolumeMount,
-) ([]*orchestrator.SandboxVolumeMount, error) {
+var errVolumesNotSupported = errors.New("volumes are not supported")
+
+var errNoEnvdVersion = errors.New("no envd version provided")
+
+const minEnvdVersionForVolumes = "0.5.8"
+
+func convertAPIVolumesToOrchestratorVolumes(ctx context.Context, sqlClient *sqlcdb.Client, featureFlags featureFlagsClient, teamID uuid.UUID, volumeMounts []api.SandboxVolumeMount, env *queries.EnvBuild) ([]*orchestrator.SandboxVolumeMount, error) {
+	// are any volumes configured?
 	if len(volumeMounts) == 0 {
 		return []*orchestrator.SandboxVolumeMount{}, nil // only b/c you should never return (nil, nil)
 	}
 
+	// are volumes enabled?
 	if !featureFlags.BoolFlag(ctx, featureflags.PersistentVolumesFlag) {
 		return nil, ErrVolumeMountsDisabled
+	}
+
+	// does your envd version support volumes?
+	if envdVersion := sharedUtils.DerefOrDefault(env.EnvdVersion, ""); envdVersion == "" {
+		logger.L().Warn(ctx, "envd version is unset")
+
+		return nil, errNoEnvdVersion
+	} else if ok, err := sharedUtils.IsGTEVersion(envdVersion, minEnvdVersionForVolumes); err != nil {
+		logger.L().Warn(ctx, "failed to check envd version", zap.Error(err), zap.String("envd_version", envdVersion))
+
+		return nil, fmt.Errorf("invalid envd version %q: %w", envdVersion, err)
+	} else if !ok {
+		return nil, fmt.Errorf("%w; template must be rebuilt. Template envd version is %s, must be at least %s to support volumes", errVolumesNotSupported, envdVersion, minEnvdVersionForVolumes)
 	}
 
 	// get volumes from the database
@@ -502,8 +538,18 @@ func validateNetworkConfig(network *api.SandboxNetworkConfig) *api.APIError {
 	}
 
 	denyOut := sharedUtils.DerefOrDefault(network.DenyOut, nil)
+	allowOut := sharedUtils.DerefOrDefault(network.AllowOut, nil)
+
+	return validateEgressRules(allowOut, denyOut)
+}
+
+// validateEgressRules validates egress allow/deny rules:
+// - denyOut entries must be valid IPs or CIDRs (not domains)
+// - allowOut entries must be valid IPs, CIDRs, or domain names
+// - when allowOut contains domains, denyOut must include 0.0.0.0/0
+func validateEgressRules(allowOut, denyOut []string) *api.APIError {
 	for _, cidr := range denyOut {
-		if !sandbox_network.IsIPOrCIDR(cidr) {
+		if !sandbox_network.IsSpecifiedIPOrCIDR(cidr) {
 			return &api.APIError{
 				Code:      http.StatusBadRequest,
 				Err:       fmt.Errorf("invalid denied CIDR %s", cidr),
@@ -512,16 +558,20 @@ func validateNetworkConfig(network *api.SandboxNetworkConfig) *api.APIError {
 		}
 	}
 
-	// Validate that allow out rules have corresponding deny out rules
-	allowOut := sharedUtils.DerefOrDefault(network.AllowOut, nil)
 	if len(allowOut) > 0 {
-		_, allowedDomains := sandbox_network.ParseAddressesAndDomains(allowOut)
+		allowedAddresses, allowedDomains := sandbox_network.ParseAddressesAndDomains(allowOut)
 
-		// Check if DenyOut contains block-all CIDR
+		for _, addr := range allowedAddresses {
+			if !sandbox_network.IsSpecifiedIPOrCIDR(addr) {
+				return &api.APIError{
+					Code:      http.StatusBadRequest,
+					Err:       fmt.Errorf("invalid allowed address %s", addr),
+					ClientMsg: fmt.Sprintf("invalid allowed address %s", addr),
+				}
+			}
+		}
 		hasBlockAll := slices.Contains(denyOut, sandbox_network.AllInternetTrafficCIDR)
 
-		// When specifying domains, require block-all CIDR in DenyOut
-		// Without this, domain filtering is meaningless (traffic is allowed by default)
 		if len(allowedDomains) > 0 && !hasBlockAll {
 			return &api.APIError{
 				Code:      http.StatusBadRequest,

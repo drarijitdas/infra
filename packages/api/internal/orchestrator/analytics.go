@@ -84,11 +84,3 @@ func (o *Orchestrator) handleNewlyCreatedSandbox(ctx context.Context, sandbox sa
 	// Increment created counter
 	o.createdCounter.Add(ctx, 1, metric.WithAttributes(telemetry.WithTeamID(sandbox.TeamID.String())))
 }
-
-func (o *Orchestrator) sandboxCounterInsert(ctx context.Context, sandbox sandbox.Sandbox) {
-	o.sandboxCounter.Add(ctx, 1, metric.WithAttributes(telemetry.WithTeamID(sandbox.TeamID.String())))
-}
-
-func (o *Orchestrator) countersRemove(ctx context.Context, sandbox sandbox.Sandbox, _ sandbox.StateAction) {
-	o.sandboxCounter.Add(ctx, -1, metric.WithAttributes(telemetry.WithTeamID(sandbox.TeamID.String())))
-}

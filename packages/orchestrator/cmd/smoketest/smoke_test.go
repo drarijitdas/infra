@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,23 +17,24 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/metric/noop"
 
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
-	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block/metrics"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
-	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template/peerclient"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/tcpfirewall"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/metrics"
+	"github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/proxy"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
+	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block/metrics"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
+	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template/peerclient"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/tcpfirewall"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/config"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/metrics"
 	artifactsregistry "github.com/e2b-dev/infra/packages/shared/pkg/artifacts-registry"
 	"github.com/e2b-dev/infra/packages/shared/pkg/dockerhub"
-	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
-	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
+	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
@@ -107,12 +109,11 @@ func TestSmokeAllFCVersions(t *testing.T) { //nolint:paralleltest // subtests sh
 			sbx, err := infra.factory.ResumeSandbox(
 				ctx,
 				tmpl,
-				sandbox.Config{
+				sandbox.NewConfig(sandbox.Config{
 					BaseTemplateID: "smoke-" + fcMajor,
 					Vcpu:           2,
 					RamMB:          512,
 					HugePages:      true,
-					Network:        &orchestrator.SandboxNetworkConfig{},
 					Envd: sandbox.EnvdMetadata{
 						Vars:        map[string]string{},
 						AccessToken: &token,
@@ -122,7 +123,7 @@ func TestSmokeAllFCVersions(t *testing.T) { //nolint:paralleltest // subtests sh
 						KernelVersion:      meta.Template.KernelVersion,
 						FirecrackerVersion: meta.Template.FirecrackerVersion,
 					},
-				},
+				}),
 				sandbox.RuntimeMetadata{
 					TemplateID:  "smoke-" + fcMajor,
 					TeamID:      "smoke",
@@ -179,20 +180,27 @@ func newTestInfra(t *testing.T, ctx context.Context) *testInfra {
 	ti := &testInfra{}
 
 	// Storage
-	persistenceTemplate, err := storage.GetTemplateStorageProvider(ctx, nil)
+	persistenceTemplate, err := storage.GetStorageProvider(ctx, storage.TemplateStorageConfig)
 	require.NoError(t, err)
 
-	persistenceBuild, err := storage.GetBuildCacheStorageProvider(ctx, nil)
+	persistenceBuild, err := storage.GetStorageProvider(ctx, storage.BuildCacheStorageConfig)
 	require.NoError(t, err)
 
 	// NBD
-	devicePool, err := nbd.NewDevicePool()
+	devicePool, err := nbd.NewDevicePool(orcConfig.NBDPoolSize)
 	require.NoError(t, err)
 	go devicePool.Populate(ctx)
 	ti.closers = append(ti.closers, func(ctx context.Context) { devicePool.Close(ctx) })
 
+	// Sandbox proxy + TCP firewall
+	sandboxes := sandbox.NewSandboxesMap()
+
+	tcpFw := tcpfirewall.New(l, networkConfig, sandboxes, noop.NewMeterProvider(), flags)
+	go tcpFw.Start(ctx)
+	ti.closers = append(ti.closers, func(ctx context.Context) { tcpFw.Close(ctx) })
+
 	// Network
-	slotStorage, err := network.NewStorageLocal(ctx, networkConfig)
+	slotStorage, err := network.NewStorageLocal(ctx, networkConfig, tcpFw)
 	require.NoError(t, err)
 	networkPool := network.NewPool(8, 8, slotStorage, networkConfig)
 	go networkPool.Populate(ctx)
@@ -214,20 +222,13 @@ func newTestInfra(t *testing.T, ctx context.Context) *testInfra {
 	ti.closers = append(ti.closers, func(_ context.Context) { templateCache.Stop() })
 	ti.templateCache = templateCache
 
-	// Sandbox proxy + TCP firewall
-	sandboxes := sandbox.NewSandboxesMap()
-
 	sandboxProxy, err := proxy.NewSandboxProxy(noop.MeterProvider{}, proxyPort, sandboxes, flags)
 	require.NoError(t, err)
 	go sandboxProxy.Start(ctx)
 	ti.closers = append(ti.closers, func(ctx context.Context) { sandboxProxy.Close(ctx) })
 
-	tcpFw := tcpfirewall.New(l, networkConfig, sandboxes, noop.NewMeterProvider(), flags)
-	go tcpFw.Start(ctx)
-	ti.closers = append(ti.closers, func(ctx context.Context) { tcpFw.Close(ctx) })
-
 	// Factory + Builder
-	factory := sandbox.NewFactory(orcConfig.BuilderConfig, networkPool, devicePool, flags, nil, nil)
+	factory := sandbox.NewFactory(orcConfig.BuilderConfig, networkPool, devicePool, flags, hoststats.NewNoopDelivery(), cgroup.NewNoopManager(), sandboxes)
 	ti.factory = factory
 
 	buildMetrics, _ := metrics.NewBuildMetrics(noop.MeterProvider{})
@@ -364,8 +365,18 @@ func downloadKernel(t *testing.T, dataDir string) {
 
 func downloadFC(t *testing.T, dataDir, version string) {
 	t.Helper()
+
+	// Old releases in https://github.com/e2b-dev/fc-versions/releases don't build
+	// x86_64 and aarch64 binaries. They just build the former and the asset's name
+	// is just 'firecracker'
+	// TODO: Drop this work-around once we remove support for Firecracker v1.10
+	assetName := "firecracker-amd64"
+	if strings.HasPrefix(version, "v1.10") {
+		assetName = "firecracker"
+	}
+
 	dst := filepath.Join(dataDir, "fc-versions", version, "firecracker")
-	url := fmt.Sprintf("https://github.com/e2b-dev/fc-versions/releases/download/%s/firecracker", version)
+	url := fmt.Sprintf("https://github.com/e2b-dev/fc-versions/releases/download/%s/%s", version, assetName)
 	downloadFile(t, url, dst, 0o755)
 }
 

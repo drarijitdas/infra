@@ -24,7 +24,7 @@ import (
 	e2bproxy "github.com/e2b-dev/infra/packages/proxy/internal/proxy"
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/factories"
-	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
+	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	e2bcatalog "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-catalog"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
@@ -120,7 +120,7 @@ func run() int {
 				l.Error(ctx, "Failed to close redis client", zap.Error(err))
 			}
 		}()
-		catalog = e2bcatalog.NewRedisSandboxesCatalog(redisClient, featureFlagsClient)
+		catalog = e2bcatalog.NewRedisSandboxCatalog(redisClient, e2bcatalog.NewNoopSandboxCache())
 	} else {
 		if !errors.Is(err, factories.ErrRedisDisabled) {
 			l.Error(ctx, "Failed to create redis client", zap.Error(err))

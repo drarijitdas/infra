@@ -36,7 +36,7 @@ type Storage interface { //nolint: interfacebloat
 	TeamsWithSandboxCount(ctx context.Context) (map[uuid.UUID]int64, error)
 
 	Update(ctx context.Context, teamID uuid.UUID, sandboxID string, updateFunc func(sandbox Sandbox) (Sandbox, error)) (Sandbox, error)
-	StartRemoving(ctx context.Context, teamID uuid.UUID, sandboxID string, stateAction StateAction) (alreadyDone bool, callback func(context.Context, error), err error)
+	StartRemoving(ctx context.Context, teamID uuid.UUID, sandboxID string, opts RemoveOpts) (Sandbox, bool, func(context.Context, error), error)
 	WaitForStateChange(ctx context.Context, teamID uuid.UUID, sandboxID string) error
 	Sync(sandboxes []Sandbox, nodeID string) []Sandbox
 }
@@ -44,8 +44,6 @@ type Storage interface { //nolint: interfacebloat
 type Callbacks struct {
 	// AddSandboxToRoutingTable should be called sync to prevent race conditions where we would know where to route the sandbox
 	AddSandboxToRoutingTable InsertCallback
-	// AsyncSandboxCounter should be called async to prevent blocking the main goroutine
-	AsyncSandboxCounter InsertCallback
 	// AsyncNewlyCreatedSandbox should be called async to prevent blocking the main goroutine
 	AsyncNewlyCreatedSandbox InsertCallback
 }
@@ -72,8 +70,8 @@ func NewStore(
 func (s *Store) Add(ctx context.Context, sandbox Sandbox, newlyCreated bool) error {
 	sbxlogger.I(sandbox).Debug(ctx, "Adding sandbox to cache",
 		zap.Bool("newly_created", newlyCreated),
-		zap.Time("start_time", sandbox.StartTime),
-		zap.Time("end_time", sandbox.EndTime),
+		logger.Time("start_time", sandbox.StartTime),
+		logger.Time("end_time", sandbox.EndTime),
 	)
 
 	endTime := sandbox.EndTime
@@ -86,7 +84,6 @@ func (s *Store) Add(ctx context.Context, sandbox Sandbox, newlyCreated bool) err
 	if err == nil {
 		// Count only newly added sandboxes to the store
 		s.callbacks.AddSandboxToRoutingTable(ctx, sandbox)
-		go s.callbacks.AsyncSandboxCounter(context.WithoutCancel(ctx), sandbox)
 	} else {
 		// TODO [ENG-3514]: Remove once migrated to Redis
 		// There's a race condition when the sandbox is added from node sync
@@ -150,8 +147,8 @@ func (s *Store) Update(ctx context.Context, teamID uuid.UUID, sandboxID string, 
 	return s.storage.Update(ctx, teamID, sandboxID, updateFunc)
 }
 
-func (s *Store) StartRemoving(ctx context.Context, teamID uuid.UUID, sandboxID string, stateAction StateAction) (alreadyDone bool, callback func(context.Context, error), err error) {
-	return s.storage.StartRemoving(ctx, teamID, sandboxID, stateAction)
+func (s *Store) StartRemoving(ctx context.Context, teamID uuid.UUID, sandboxID string, opts RemoveOpts) (Sandbox, bool, func(context.Context, error), error) {
+	return s.storage.StartRemoving(ctx, teamID, sandboxID, opts)
 }
 
 func (s *Store) WaitForStateChange(ctx context.Context, teamID uuid.UUID, sandboxID string) error {
