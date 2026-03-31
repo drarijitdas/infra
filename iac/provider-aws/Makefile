@@ -105,22 +105,16 @@ terraform:
 	@ $(TF) fmt -recursive
 	@ $(tf_vars) $(TF) $(ARGS)
 
-.PHONY: plan-only-jobs
-plan-only-jobs:
+.PHONY: plan-only-kubernetes
+plan-only-kubernetes:
 	@ printf "Planning Terraform for env: `tput setaf 2``tput bold`$(ENV)`tput sgr0`\n\n"
 	$(TF) fmt -recursive
-	@ $(tf_vars) $(TF) plan $(TF_VAR_FILE_ARG) -out=.tfplan.$(ENV) -compact-warnings -target=module.nomad
+	@ $(tf_vars) $(TF) plan $(TF_VAR_FILE_ARG) -out=.tfplan.$(ENV) -compact-warnings -target=module.kubernetes
 
-.PHONY: plan-only-jobs/%
-plan-only-jobs/%:
+.PHONY: plan-without-kubernetes
+plan-without-kubernetes:
 	@ printf "Planning Terraform for env: `tput setaf 2``tput bold`$(ENV)`tput sgr0`\n\n"
-	$(TF) fmt -recursive
-	@ $(tf_vars) $(TF) plan $(TF_VAR_FILE_ARG) -out=.tfplan.$(ENV) -compact-warnings -target=module.nomad.nomad_job.$$(echo "$(notdir $@)" | tr '-' '_') -target=module.nomad.module.$$(echo "$(notdir $@)" | tr '-' '_');
-
-.PHONY: plan-without-jobs
-plan-without-jobs:
-	@ printf "Planning Terraform for env: `tput setaf 2``tput bold`$(ENV)`tput sgr0`\n\n"
-	$(eval TARGET := $(shell cat main.tf | grep "^module" | awk '{print $$2}' | tr ' ' '\n' | grep -v -e "nomad" | awk '{print "-target=module." $$0 ""}' | xargs))
+	$(eval TARGET := $(shell cat main.tf | grep "^module" | awk '{print $$2}' | tr ' ' '\n' | grep -v -e "kubernetes" | awk '{print "-target=module." $$0 ""}' | xargs))
 	@ $(tf_vars) \
 	$(TF) plan \
 	$(TF_VAR_FILE_ARG) \

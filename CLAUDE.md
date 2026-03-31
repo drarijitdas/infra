@@ -86,8 +86,8 @@ make build-and-upload/orchestrator
 
 # Plan Terraform changes
 make plan                    # All changes
-make plan-without-jobs       # Without Nomad jobs
-make plan-only-jobs          # Only Nomad jobs
+make plan-without-kubernetes  # Without Kubernetes workloads
+make plan-only-kubernetes    # Only Kubernetes workloads
 
 # Apply changes
 make apply
@@ -224,8 +224,7 @@ go test -race -v -run TestCreateSandbox ./internal/handlers
 - Location: `iac/provider-gcp/`
 - Nomad jobs: `iac/provider-gcp/nomad/jobs/`
 - Network config: `iac/provider-gcp/network/`
-- Deploy jobs only: `make plan-only-jobs` + `make apply`
-- Deploy specific job: `make plan-only-jobs/orchestrator`
+- Deploy Kubernetes workloads only: `make plan-only-kubernetes` + `make apply`
 
 ### Firecracker & VM Management
 - Orchestrator requires **sudo** to run (Firecracker needs root)
