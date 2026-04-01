@@ -353,8 +353,8 @@ module "kubernetes" {
   template_manager_hpa_enabled      = var.template_manager_hpa_enabled
   template_manager_hpa_min_replicas = var.template_manager_hpa_min_replicas
   template_manager_hpa_max_replicas = var.template_manager_hpa_max_replicas
-  template_bucket_name    = module.init.fc_template_bucket_name
-  build_cache_bucket_name = module.init.fc_build_cache_bucket_name
+  template_bucket_name              = module.init.fc_template_bucket_name
+  build_cache_bucket_name           = module.init.fc_build_cache_bucket_name
 
   # Logs
   loki_machine_count       = var.loki_cluster_size

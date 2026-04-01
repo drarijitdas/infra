@@ -140,6 +140,28 @@ import:
 	@ printf "Importing resources for env: `tput setaf 2``tput bold`$(ENV)`tput sgr0`\n\n"
 	@ $(tf_vars) $(TF) import $(TF_VAR_FILE_ARG) "$(TARGET)" "$(ID)" -no-color
 
+# Compatibility aliases for root Makefile delegation
+# (AWS uses Kubernetes instead of Nomad jobs)
+.PHONY: plan-only-jobs
+plan-only-jobs: plan-only-kubernetes
+
+.PHONY: plan-only-jobs/%
+plan-only-jobs/%:
+	@echo "Nomad job targets are not applicable for AWS provider. Use plan-only-kubernetes."
+
+.PHONY: plan-without-jobs
+plan-without-jobs: plan-without-kubernetes
+
+.PHONY: state-migrate
+state-migrate:
+	@ $(TF) init -input=false -migrate-state \
+		-backend-config=bucket=$(TERRAFORM_STATE_BUCKET) \
+		-backend-config=region=$(AWS_REGION)
+
+.PHONY: move
+move:
+	@ $(tf_vars) $(TF) state mv $(TF_VAR_FILE_ARG) "$(SOURCE)" "$(TARGET)"
+
 .PHONY: provider-login
 provider-login:
 	aws ecr get-login-password --region $(AWS_REGION) --profile $(AWS_PROFILE) | docker login --username AWS --password-stdin $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com

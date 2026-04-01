@@ -33,14 +33,14 @@ resource "aws_secretsmanager_secret_version" "dockerhub_pull_through_credentials
 }
 
 data "aws_secretsmanager_secret_version" "dockerhub_username" {
-  count     = var.enable_dockerhub_pull_through_cache ? 1 : 0
-  secret_id = aws_secretsmanager_secret.dockerhub_username.id
+  count      = var.enable_dockerhub_pull_through_cache ? 1 : 0
+  secret_id  = aws_secretsmanager_secret.dockerhub_username.id
   depends_on = [aws_secretsmanager_secret_version.dockerhub_username]
 }
 
 data "aws_secretsmanager_secret_version" "dockerhub_password" {
-  count     = var.enable_dockerhub_pull_through_cache ? 1 : 0
-  secret_id = aws_secretsmanager_secret.dockerhub_password.id
+  count      = var.enable_dockerhub_pull_through_cache ? 1 : 0
+  secret_id  = aws_secretsmanager_secret.dockerhub_password.id
   depends_on = [aws_secretsmanager_secret_version.dockerhub_password]
 }
 
