@@ -117,12 +117,12 @@ Client → Client-Proxy → API (REST) ⟷ PostgreSQL
 
 **Orchestrator (`packages/orchestrator/`)** - Firecracker microVM orchestration
 - Entry point: `main.go`
-- VM management: `internal/sandbox/`
-- Firecracker integration: `internal/sandbox/fc/`
-- Networking: `internal/sandbox/network/`
-- Storage: `internal/sandbox/nbd/` (Network Block Device)
-- Template caching: `internal/sandbox/template/`
-- gRPC server: `internal/server/`
+- VM management: `pkg/sandbox/`
+- Firecracker integration: `pkg/sandbox/fc/`
+- Networking: `pkg/sandbox/network/`
+- Storage: `pkg/sandbox/nbd/` (Network Block Device)
+- Template caching: `pkg/sandbox/template/`
+- gRPC server: `pkg/server/`
 - Utilities: `cmd/clean-nfs-cache/`, `cmd/build-template/`
 
 **Envd (`packages/envd/`)** - In-VM daemon using Connect RPC
@@ -143,7 +143,7 @@ Client → Client-Proxy → API (REST) ⟷ PostgreSQL
 - Database: `pkg/db/` (ent ORM)
 - Models: `pkg/models/`
 - Storage: `pkg/storage/` (GCS/S3 clients)
-- Feature flags: `pkg/feature-flags/` (LaunchDarkly)
+- Feature flags: `pkg/featureflags/` (LaunchDarkly)
 
 **Database (`packages/db/`)** - PostgreSQL layer
 - Migrations: `migrations/*.sql` (goose)
@@ -200,6 +200,52 @@ go test -race -v ./internal/handlers
 # Specific test
 go test -race -v -run TestCreateSandbox ./internal/handlers
 ```
+
+## Upstream Sync Workflow
+
+This repo is forked from `e2b-dev/infra`. Application code (packages/, spec/, tests/, scripts/) is synced from upstream while infrastructure (iac/) diverges independently.
+
+### Syncing Upstream Changes
+```bash
+# Preview what upstream changed (dry run)
+./scripts/sync-upstream.sh
+
+# Apply upstream changes to working tree
+./scripts/sync-upstream.sh --apply
+
+# If the script fails on deleted files (e.g., "does not exist in index"),
+# use git checkout to pull upstream state directly:
+git checkout upstream/main -- packages/ spec/ tests/ scripts/ go.work
+```
+
+### Verifying Builds After Sync
+
+**IMPORTANT**: Go code must be verified inside a Linux Docker container, not natively on macOS. Many packages use Linux-only syscalls (iptables, netlink, cgroups) and CGO that won't compile on Darwin.
+
+```bash
+# Verify ALL packages compile in Linux Docker (requires Docker running)
+./scripts/verify-go-build.sh
+
+# Verify specific packages
+./scripts/verify-go-build.sh packages/api packages/orchestrator
+
+# CGO packages (orchestrator) are built with CGO_ENABLED=1 on Debian
+# All other packages are built with CGO_ENABLED=0
+```
+
+The build verification script (`scripts/verify-go-build.sh`):
+- Runs `go build` + `go vet` inside `golang:1.25.4-bookworm` Docker container
+- Mounts the repo read-only to prevent accidental writes
+- Automatically sets CGO_ENABLED=1 for orchestrator, CGO_ENABLED=0 for all others
+- Uses the go.work workspace for cross-package dependency resolution
+- All 13 workspace packages must pass before committing a sync
+
+### Full Sync Procedure
+1. `./scripts/sync-upstream.sh` — preview changes
+2. `./scripts/sync-upstream.sh --apply` — apply (or `git checkout upstream/main -- packages/ spec/ tests/ scripts/ go.work` if the script fails)
+3. `./scripts/verify-go-build.sh` — verify all packages compile in Linux Docker
+4. Review with `git diff --cached --stat` and `git diff --cached`
+5. Commit: `git commit -m 'sync: pull upstream app code changes (N commits, up to <sha>)'`
 
 ## Important Development Notes
 
