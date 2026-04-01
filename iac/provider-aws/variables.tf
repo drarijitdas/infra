@@ -18,7 +18,7 @@ variable "vpc_cidr" {
 variable "kubernetes_version" {
   description = "Kubernetes version for the EKS cluster"
   type        = string
-  default     = "1.31"
+  default     = "1.32"
 }
 
 variable "eks_ami_id" {
@@ -484,9 +484,9 @@ variable "eks_public_access_cidrs" {
 # --- EKS Cluster Logging ---
 
 variable "eks_cluster_log_types" {
-  description = "EKS control plane log types to enable (default: audit + authenticator for non-production; production should override to include all 5 types)"
+  description = "EKS control plane log types to enable"
   type        = list(string)
-  default     = ["audit", "authenticator"]
+  default     = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 }
 
 variable "eks_log_retention_days" {
@@ -720,7 +720,7 @@ variable "temporal_db_user" {
 }
 
 variable "temporal_chart_version" {
-  description = "Temporal Helm chart version. Pin to a specific version for reproducible deploys. Last reviewed: 2026-02-26."
+  description = "Temporal Helm chart version. Pin to a specific version for reproducible deploys. Last reviewed: 2026-04-01."
   type        = string
   default     = "0.73.1"
 }

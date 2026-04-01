@@ -80,7 +80,7 @@ The database module only creates the subnet group. You must provision the Aurora
 aws rds create-db-cluster \
   --db-cluster-identifier e2b-aurora \
   --engine aurora-postgresql \
-  --engine-version 15.4 \
+  --engine-version 16.4 \
   --serverless-v2-scaling-configuration MinCapacity=0.5,MaxCapacity=128 \
   --master-username e2b_admin \
   --master-user-password "$(openssl rand -base64 32)" \

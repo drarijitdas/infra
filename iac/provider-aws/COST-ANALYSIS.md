@@ -9,7 +9,7 @@ This document compares two approaches for deploying E2B's Firecracker-based sand
 
 Sandbox default configuration: **2 vCPU, 512 MB RAM** per sandbox.
 
-All prices are **on-demand** rates in eu-central-1 unless noted. Prices verified against the AWS Price List API (February 2026). Frankfurt is ~12-19% more expensive than us-east-1 depending on the service.
+All prices are **on-demand** rates in eu-central-1 unless noted. Prices verified against the AWS Price List API (April 2026). Frankfurt is ~12-19% more expensive than us-east-1 depending on the service.
 
 ---
 
@@ -352,7 +352,7 @@ Use 1 NAT gateway instead of 2. Saves ~$35/mo. Trade-off: AZ-level egress failur
 | **Germany's BDSG** | German Federal Data Protection Act provides additional protections on top of GDPR. |
 | **SOC 2 Type II** | AWS eu-central-1 is SOC 2 audited, often required alongside ISO 27001. |
 
-**Alternative GDPR-compliant regions**: eu-west-1 (Ireland), eu-west-3 (Paris), eu-north-1 (Stockholm), eu-south-1 (Milan). C8i availability must be verified per region -- Frankfurt is the only EU region confirmed to have C8i with nested virtualization as of February 2026.
+**Alternative GDPR-compliant regions**: eu-west-1 (Ireland), eu-west-3 (Paris), eu-north-1 (Stockholm), eu-south-1 (Milan). C8i availability must be verified per region -- Frankfurt is the only EU region confirmed to have C8i with nested virtualization as of April 2026.
 
 ### GDPR Compliance Analysis
 
@@ -494,7 +494,7 @@ Monthly Cost (eu-central-1, on-demand)
 
 ## Sources
 
-### Pricing (verified via AWS Price List API, February 2026)
+### Pricing (verified via AWS Price List API, April 2026)
 
 - [AWS Price List API](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/price-changes.html)
 - [EC2 On-Demand Pricing](https://aws.amazon.com/ec2/pricing/on-demand/) -- i3.metal: $5.952/hr, c8i.2xlarge: $0.428/hr (eu-central-1)

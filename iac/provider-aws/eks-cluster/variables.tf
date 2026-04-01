@@ -6,7 +6,7 @@ variable "cluster_name" {
 variable "kubernetes_version" {
   description = "Kubernetes version for the EKS cluster"
   type        = string
-  default     = "1.31"
+  default     = "1.32"
 }
 
 variable "vpc_id" {
@@ -147,7 +147,7 @@ variable "cache_disk_throughput_mbps" {
 variable "bootstrap_instance_type" {
   description = "Instance type for bootstrap managed node group (Karpenter controller + system pods)"
   type        = string
-  default     = "t3.large"
+  default     = "t3.medium"
 }
 
 variable "temporal_enabled" {

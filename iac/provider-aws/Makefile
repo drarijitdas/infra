@@ -72,9 +72,18 @@ init:
 		--bucket $(TERRAFORM_STATE_BUCKET) \
 		--public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 
+	# Create DynamoDB table for state locking
+	@ aws dynamodb create-table \
+		--table-name e2b-terraform-lock \
+		--attribute-definitions AttributeName=LockID,AttributeType=S \
+		--key-schema AttributeName=LockID,KeyType=HASH \
+		--billing-mode PAY_PER_REQUEST \
+		--region $(AWS_REGION) 2>/dev/null || true
+
 	@ $(TF) init -input=false -reconfigure \
 		-backend-config=bucket=$(TERRAFORM_STATE_BUCKET) \
-		-backend-config=region=$(AWS_REGION)
+		-backend-config=region=$(AWS_REGION) \
+		-backend-config=dynamodb_table=e2b-terraform-lock
 	@ $(tf_vars) $(TF) apply -target=module.init -auto-approve -input=false -compact-warnings
 
 .PHONY: apply-init
@@ -86,7 +95,8 @@ switch:
 	@ printf "Switching Terraform backend for different env ${ENV}\n"
 	@ $(TF) init -input=false -upgrade -reconfigure \
 		-backend-config=bucket=$(TERRAFORM_STATE_BUCKET) \
-		-backend-config=region=$(AWS_REGION)
+		-backend-config=region=$(AWS_REGION) \
+		-backend-config=dynamodb_table=e2b-terraform-lock
 
 .PHONY: destroy
 destroy:
@@ -156,7 +166,8 @@ plan-without-jobs: plan-without-kubernetes
 state-migrate:
 	@ $(TF) init -input=false -migrate-state \
 		-backend-config=bucket=$(TERRAFORM_STATE_BUCKET) \
-		-backend-config=region=$(AWS_REGION)
+		-backend-config=region=$(AWS_REGION) \
+		-backend-config=dynamodb_table=e2b-terraform-lock
 
 .PHONY: move
 move:

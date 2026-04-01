@@ -2,13 +2,14 @@ terraform {
   required_version = ">= 1.5.0"
 
   backend "s3" {
-    key = "terraform/orchestration/state"
+    key            = "terraform/orchestration/state"
+    dynamodb_table = "e2b-terraform-lock"
   }
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "6.33.0"
+      version = "6.38.0"
     }
 
     cloudflare = {
@@ -28,7 +29,7 @@ terraform {
 
     kubectl = {
       source  = "alekc/kubectl"
-      version = "2.1.3"
+      version = "2.1.6"
     }
 
     random = {
