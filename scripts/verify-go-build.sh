@@ -81,7 +81,10 @@ for pkg in "${TARGETS[@]}"; do
 
   # Run go build inside Docker, mounting the repo read-only.
   # Uses 'go build ./...' to compile-check all sub-packages.
-  # The -o /dev/null discards binaries — we only care about compilation.
+  #
+  # Orchestrator needs special handling: busybox must be fetched before build
+  # (go:embed requires the file at compile time). We copy the package to a
+  # writable location and run the fetch script inside the container.
   if OUTPUT=$(docker run --rm \
     --platform linux/$(go env GOARCH) \
     -v "${REPO_ROOT}:/src:ro" \
@@ -90,6 +93,20 @@ for pkg in "${TARGETS[@]}"; do
     -e GOWORK="/src/go.work" \
     "${IMAGE}" \
     sh -c '
+      PKG_DIR=$(pwd)
+
+      # Pre-build setup: fetch embedded assets if needed
+      if [ -f scripts/fetch-busybox.sh ]; then
+        # Copy package to writable location for embed assets
+        cp -a /src /writable-src 2>/dev/null || true
+        cd "/writable-src/'"${pkg}"'"
+        export GOWORK="/writable-src/go.work"
+        bash scripts/fetch-busybox.sh 1.36.1 "$(go env GOARCH)" \
+          pkg/template/build/core/systeminit/busybox 2>&1
+        PKG_DIR=$(pwd)
+      fi
+
+      cd "$PKG_DIR"
       # Try building with output to tmpdir (handles main packages on read-only mount).
       # Fall back to plain go build for library-only packages.
       mkdir -p /tmp/out
